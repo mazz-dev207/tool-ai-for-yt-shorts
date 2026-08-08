@@ -15,51 +15,51 @@ CONTENT_TYPES = (
     "documentary, educational, reaction, storytelling, general"
 )
 
+RETENTION_NUM_CTX = 6144
+RETENTION_NUM_PREDICT = 1400
+OLLAMA_KEEP_ALIVE = "30m"
+
 
 class RetentionAnalyzer:
     def __init__(self, model: str = OLLAMA_MODEL):
         self.model = model
 
-    def analyze(self, context: dict, pacing: dict, max_variants: int = 3) -> dict:
-        transcript_text = format_context_for_llm(context)
+    def analyze(self, context: dict, pacing: dict, max_variants: int = 2) -> dict:
+        transcript_text = format_context_for_llm(context, max_chars=11000)
 
         prompt = f"""
 You are the retention editor for a short-form video system.
-Your job is NOT to invent a story. Your job is to build the strongest truthful Short possible from the supplied transcript.
+Build the strongest truthful Short from the supplied transcript without inventing anything.
 
-NON-NEGOTIABLE RULES:
-- Never invent people, money, numbers, quotes, events, consequences, stakes or context.
-- Every factual claim in a hook must be supported by the transcript.
-- Extractive variants may ONLY use source timestamp ranges that exist in the supplied transcript.
+RULES
+- Use only facts and source ranges supported by the transcript.
 - Prefer original speech/audio.
 - Avoid cuts in the middle of an idea.
-- Avoid robotic edits and unnatural sentence combinations.
-- The final story should progress: HOOK -> MINIMAL CONTEXT -> ESCALATION -> PAYOFF when the material supports it.
-- Do not force a fixed duration. Prefer roughly 15-60 seconds depending on the idea.
-- Generated hooks are suggestions only; this project currently has no TTS, so extractive hooks are preferred for the selected audio edit.
+- Remove filler, repetition and dead time when useful.
+- Prefer HOOK -> MINIMAL CONTEXT -> ESCALATION -> PAYOFF when supported.
+- Keep the edit natural and understandable standalone.
+- Prefer roughly 15-60 seconds.
 - Use timestamps only from the transcript below.
-- Adapt priorities to content type: podcast/interview -> strong statements, stories, revelations; gaming -> clutch/fail/win/rare events/reactions; challenge/entertainment -> stakes, progress, eliminations, twists, results; educational -> surprising facts, clear explanations, myths, consequences; storytelling -> conflict, mystery, escalation, twist and payoff.
 
 CONTENT TYPE must be one of: {CONTENT_TYPES}.
 
-Return ONE valid JSON object with these keys:
+Return ONE valid JSON object with:
 1. content_type: string
-2. summary: short factual summary
+2. summary: one short factual sentence
 3. scores: object with integer 0-100 fields: hook, curiosity, emotion, conflict, payoff, information_density, pacing, standalone
-4. retention_anchors: array of objects with start, end, type, importance (0-100), reason
-5. retention_risks: array of objects with start, end, reason, severity (0-100)
-6. hook_variants: 3-5 objects. Each has text, type, generated, score, evidence. If generated=false also include source_start and source_end.
-7. open_loops: array of truthful open loops already present or naturally implied by the material. Each has start, end, text, strength (0-100). Do not invent artificial promises.
-8. pattern_interrupts: array of OPTIONAL visual recommendations. Each has start, end, type (crop_change/zoom/punch_in/speaker_change/broll/text/effect/caption_position), reason, importance (0-100). Only recommend when attention would benefit.
-9. variants: up to {max_variants} EXTRACTIVE edit variants. Each object has name, strategy="extractive", rationale, scores (same 8 score fields), and segments.
-   Each segment has start, end, role (hook/context/escalation/payoff/bridge/reaction), reason.
-   Segments may skip filler, pauses, repetition and tangents. Reordering is allowed only when it sounds natural and preserves meaning.
+4. retention_anchors: up to 4 objects with start, end, type, importance, reason
+5. retention_risks: up to 4 objects with start, end, reason, severity
+6. hook_variants: up to 3 objects with text, type, generated, score, evidence. For generated=false also include source_start/source_end.
+7. open_loops: up to 3 objects with start, end, text, strength
+8. pattern_interrupts: up to 3 optional visual recommendations with start, end, type, reason, importance
+9. variants: up to {max_variants} EXTRACTIVE edit variants. Each has name, strategy="extractive", rationale, scores, segments.
+   Each segment has start, end, role, reason.
 
-The candidate starts at {context['candidate_start']:.2f}s and ends at {context['candidate_end']:.2f}s.
-The available context starts at {context['start']:.2f}s and ends at {context['end']:.2f}s.
+Candidate: {context['candidate_start']:.2f}s -> {context['candidate_end']:.2f}s
+Available context: {context['start']:.2f}s -> {context['end']:.2f}s
 
-Deterministic pacing metrics for the original candidate:
-{json.dumps(pacing, ensure_ascii=False)}
+Deterministic pacing metrics:
+{json.dumps(pacing, ensure_ascii=False, separators=(',', ':'))}
 
 TIMESTAMPED TRANSCRIPT:
 {transcript_text}
@@ -69,22 +69,35 @@ TIMESTAMPED TRANSCRIPT:
         response = ollama.chat(
             model=self.model,
             stream=False,
+            think=False,
+            keep_alive=OLLAMA_KEEP_ALIVE,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "Return only valid JSON. Be conservative. Ground every factual claim in the supplied transcript. "
-                        "Do not default all scores to the same value."
+                        "Return only valid JSON. Be conservative and concise. "
+                        "Ground every factual claim in the transcript."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
             format="json",
-            options={"temperature": 0.15, "think": False},
+            options={
+                "temperature": 0.10,
+                "num_ctx": RETENTION_NUM_CTX,
+                "num_predict": RETENTION_NUM_PREDICT,
+            },
         )
 
         elapsed = time.time() - started
-        info(f"Retention AI răspuns în {elapsed:.2f}s")
+        load_ms = float(response.get("load_duration", 0) or 0) / 1_000_000
+        prompt_tokens = int(response.get("prompt_eval_count", 0) or 0)
+        output_tokens = int(response.get("eval_count", 0) or 0)
+
+        info(
+            f"Retention AI răspuns în {elapsed:.2f}s | "
+            f"load={load_ms:.0f}ms | in={prompt_tokens} tok | out={output_tokens} tok"
+        )
 
         content = response["message"]["content"].strip()
         try:
