@@ -15,8 +15,10 @@ CONTENT_TYPES = (
     "documentary, educational, reaction, storytelling, general"
 )
 
-RETENTION_NUM_CTX = 6144
-RETENTION_NUM_PREDICT = 1400
+# Retention-ul trebuie să fie suficient de detaliat pentru editare, nu pentru
+# a produce metadata pe care pipeline-ul nu o folosește la tăiere.
+RETENTION_NUM_CTX = 4096
+RETENTION_NUM_PREDICT = 900
 OLLAMA_KEEP_ALIVE = "30m"
 
 
@@ -24,36 +26,74 @@ class RetentionAnalyzer:
     def __init__(self, model: str = OLLAMA_MODEL):
         self.model = model
 
-    def analyze(self, context: dict, pacing: dict, max_variants: int = 2) -> dict:
-        transcript_text = format_context_for_llm(context, max_chars=11000)
+    def analyze(self, context: dict, pacing: dict, max_variants: int = 1) -> dict:
+        transcript_text = format_context_for_llm(context, max_chars=8500)
 
         prompt = f"""
-You are the retention editor for a short-form video system.
-Build the strongest truthful Short from the supplied transcript without inventing anything.
+You are a retention editor for short-form video.
+Create the strongest truthful EXTRACTIVE edit from the transcript.
 
 RULES
-- Use only facts and source ranges supported by the transcript.
-- Prefer original speech/audio.
-- Avoid cuts in the middle of an idea.
-- Remove filler, repetition and dead time when useful.
+- Never invent facts, dialogue, stakes or events.
+- Use only timestamp ranges present in the transcript.
+- Prefer original speech/audio and natural sentence boundaries.
+- Remove filler, repetition and dead time only when the edit still sounds natural.
 - Prefer HOOK -> MINIMAL CONTEXT -> ESCALATION -> PAYOFF when supported.
-- Keep the edit natural and understandable standalone.
-- Prefer roughly 15-60 seconds.
-- Use timestamps only from the transcript below.
+- Keep the result understandable without the original video.
+- Target roughly 15-60 seconds, but quality matters more than duration.
+- Be concise. The complete JSON response should normally stay under 650 tokens.
 
 CONTENT TYPE must be one of: {CONTENT_TYPES}.
 
-Return ONE valid JSON object with:
-1. content_type: string
-2. summary: one short factual sentence
-3. scores: object with integer 0-100 fields: hook, curiosity, emotion, conflict, payoff, information_density, pacing, standalone
-4. retention_anchors: up to 4 objects with start, end, type, importance, reason
-5. retention_risks: up to 4 objects with start, end, reason, severity
-6. hook_variants: up to 3 objects with text, type, generated, score, evidence. For generated=false also include source_start/source_end.
-7. open_loops: up to 3 objects with start, end, text, strength
-8. pattern_interrupts: up to 3 optional visual recommendations with start, end, type, reason, importance
-9. variants: up to {max_variants} EXTRACTIVE edit variants. Each has name, strategy="extractive", rationale, scores, segments.
-   Each segment has start, end, role, reason.
+Return ONLY one valid JSON object with exactly these keys:
+{{
+  "content_type": "...",
+  "scores": {{
+    "hook": 0,
+    "curiosity": 0,
+    "emotion": 0,
+    "conflict": 0,
+    "payoff": 0,
+    "information_density": 0,
+    "pacing": 0,
+    "standalone": 0
+  }},
+  "hook_variants": [
+    {{
+      "text": "short exact/source-supported hook description",
+      "type": "original",
+      "generated": false,
+      "score": 0,
+      "evidence": [],
+      "source_start": 0.0,
+      "source_end": 0.0
+    }}
+  ],
+  "variants": [
+    {{
+      "name": "best_edit",
+      "strategy": "extractive",
+      "rationale": "one short sentence",
+      "scores": {{
+        "hook": 0,
+        "curiosity": 0,
+        "emotion": 0,
+        "conflict": 0,
+        "payoff": 0,
+        "information_density": 0,
+        "pacing": 0,
+        "standalone": 0
+      }},
+      "segments": [
+        {{"start": 0.0, "end": 0.0, "role": "hook", "reason": "short reason"}}
+      ]
+    }}
+  ]
+}}
+
+Return at most ONE hook and ONE edit variant.
+Use no more than 6 segments in the edit.
+Do not add summaries, anchors, risks, open loops, visual suggestions, explanations, markdown or extra keys.
 
 Candidate: {context['candidate_start']:.2f}s -> {context['candidate_end']:.2f}s
 Available context: {context['start']:.2f}s -> {context['end']:.2f}s
@@ -75,15 +115,15 @@ TIMESTAMPED TRANSCRIPT:
                 {
                     "role": "system",
                     "content": (
-                        "Return only valid JSON. Be conservative and concise. "
-                        "Ground every factual claim in the transcript."
+                        "Return only compact valid JSON matching the requested structure. "
+                        "Ground every timestamp and factual claim in the transcript."
                     ),
                 },
                 {"role": "user", "content": prompt},
             ],
             format="json",
             options={
-                "temperature": 0.10,
+                "temperature": 0.08,
                 "num_ctx": RETENTION_NUM_CTX,
                 "num_predict": RETENTION_NUM_PREDICT,
             },
@@ -103,9 +143,18 @@ TIMESTAMPED TRANSCRIPT:
         try:
             result = json.loads(content)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Retention AI a returnat JSON invalid: {exc}") from exc
+            raise RuntimeError(
+                f"Retention AI a returnat JSON invalid: {exc}"
+            ) from exc
 
         if not isinstance(result, dict):
             raise RuntimeError("Retention AI nu a returnat un obiect JSON.")
+
+        # Câmpurile următoare sunt opționale pentru optimizer. Le păstrăm
+        # compatibile fără să cerem modelului să consume tokeni pentru ele.
+        result.setdefault("retention_anchors", [])
+        result.setdefault("retention_risks", [])
+        result.setdefault("open_loops", [])
+        result.setdefault("pattern_interrupts", [])
 
         return result
