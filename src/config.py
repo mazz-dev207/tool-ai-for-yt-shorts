@@ -48,13 +48,15 @@ VIDEO_HEIGHT = 1920
 # --------------------------------------------------
 RETENTION_ENABLED = True
 
-# Trimitem doar context local către LLM, nu transcriptul complet.
-RETENTION_CONTEXT_BEFORE = 45.0
-RETENTION_CONTEXT_AFTER = 20.0
+# Context local suficient pentru a repara începutul/finalul fără să
+# retrimitem inutil peste un minut suplimentar de transcript la fiecare candidat.
+RETENTION_CONTEXT_BEFORE = 25.0
+RETENTION_CONTEXT_AFTER = 15.0
 
-# Limite de cost / timp pentru analiza locală.
+# Analizăm în continuare cei mai buni 8 candidați, dar generăm doar două
+# variante de editare per candidat; de obicei a treia variantă dubla munca.
 RETENTION_MAX_CANDIDATES = 8
-RETENTION_MAX_VARIANTS = 3
+RETENTION_MAX_VARIANTS = 2
 
 # Editarea extractivă rămâne metoda preferată.
 RETENTION_PREFER_ORIGINAL_HOOK = True
