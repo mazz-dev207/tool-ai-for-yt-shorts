@@ -32,7 +32,7 @@ def clean_folder(folder: Path):
             shutil.rmtree(item)
 
 
-def timed_step(name: str, func, *args, **kwargs):
+def timed_step(func, *args, **kwargs):
     started = time.time()
     result = func(*args, **kwargs)
     elapsed = time.time() - started
