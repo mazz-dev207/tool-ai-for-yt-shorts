@@ -1,6 +1,7 @@
 from pathlib import Path
 import shutil
 import sys
+import time
 
 from src.config import (
     INPUT_DIR,
@@ -31,6 +32,13 @@ def clean_folder(folder: Path):
             shutil.rmtree(item)
 
 
+def timed_step(name: str, func, *args, **kwargs):
+    started = time.time()
+    result = func(*args, **kwargs)
+    elapsed = time.time() - started
+    return result, elapsed
+
+
 def main():
     if len(sys.argv) < 2:
         print('Utilizare: python main.py "video_name"')
@@ -43,7 +51,11 @@ def main():
         print(f"Fișierul nu există:\n{video_path}")
         sys.exit(1)
 
+    pipeline_started = time.time()
+    timings = {}
+
     info("Curăț fișierele vechi...")
+    clean_started = time.time()
     for folder in [
         TRANSCRIPT_DIR,
         HIGHLIGHTS_DIR,
@@ -53,27 +65,30 @@ def main():
         TEMP_DIR,
     ]:
         clean_folder(folder)
+    timings["cleanup"] = time.time() - clean_started
 
     info("1/7 Transcriere...")
-    transcribe(video_path)
+    _, timings["transcription"] = timed_step(transcribe, video_path)
 
     info("2/7 Creare ferestre analiză...")
-    chunk_transcript(video_name)
+    _, timings["chunking"] = timed_step(chunk_transcript, video_name)
 
     info("3/7 Candidate discovery...")
-    select_highlights(video_name)
+    _, timings["candidate_discovery"] = timed_step(select_highlights, video_name)
 
     if RETENTION_ENABLED:
         info("4/7 Optimizare pentru retenție...")
-        optimize_retention(video_name)
+        _, timings["retention"] = timed_step(optimize_retention, video_name)
     else:
         info("4/7 Retention engine dezactivat.")
+        timings["retention"] = 0.0
 
     info("5/7 Tăiere / asamblare clipuri...")
-    cut(video_name)
+    _, timings["cut"] = timed_step(cut, video_name)
 
     info("6/7 Generare subtitrări...")
-    CaptionEngine().generate(video_name)
+    caption_engine = CaptionEngine()
+    _, timings["captions"] = timed_step(caption_engine.generate, video_name)
 
     clips = sorted(
         OUTPUT_DIR.glob("clip_*.mp4"),
@@ -84,14 +99,32 @@ def main():
         raise RuntimeError("Nu au fost generate clipuri.")
 
     info(f"7/7 Randare {len(clips)} clipuri...")
+    render_started = time.time()
     for clip in clips:
         render(clip.stem)
+    timings["render"] = time.time() - render_started
+
+    total_elapsed = time.time() - pipeline_started
 
     print()
     success("Pipeline terminat cu succes!")
     print()
     print(f"Clipuri generate: {len(clips)}")
     print(f"Rezultate finale: {FINAL_DIR}")
+    print()
+    print("--- TIMPI PIPELINE ---")
+    for key in [
+        "cleanup",
+        "transcription",
+        "chunking",
+        "candidate_discovery",
+        "retention",
+        "cut",
+        "captions",
+        "render",
+    ]:
+        print(f"{key:20s}: {timings.get(key, 0.0):8.2f}s")
+    print(f"{'TOTAL':20s}: {total_elapsed:8.2f}s")
 
 
 if __name__ == "__main__":
