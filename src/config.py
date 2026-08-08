@@ -53,14 +53,14 @@ RETENTION_ENABLED = True
 RETENTION_CONTEXT_BEFORE = 25.0
 RETENTION_CONTEXT_AFTER = 15.0
 
-# Analizăm în continuare cei mai buni 8 candidați, dar generăm doar două
-# variante de editare per candidat; de obicei a treia variantă dubla munca.
+# Discovery face selecția largă. Retention produce un singur edit AI concentrat;
+# varianta originală este adăugată automat în Python ca benchmark/fallback.
 RETENTION_MAX_CANDIDATES = 8
-RETENTION_MAX_VARIANTS = 2
+RETENTION_MAX_VARIANTS = 1
 
 # Editarea extractivă rămâne metoda preferată.
 RETENTION_PREFER_ORIGINAL_HOOK = True
-RETENTION_MAX_SEGMENTS = 8
+RETENTION_MAX_SEGMENTS = 6
 
 # Durată orientativă; optimizer-ul nu forțează 45s.
 RETENTION_MIN_CLIP_DURATION = 12.0
