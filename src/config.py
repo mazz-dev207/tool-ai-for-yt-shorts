@@ -48,18 +48,25 @@ VIDEO_HEIGHT = 1920
 # --------------------------------------------------
 RETENTION_ENABLED = True
 
-# Trimitem doar context local către LLM, nu transcriptul complet.
-RETENTION_CONTEXT_BEFORE = 45.0
-RETENTION_CONTEXT_AFTER = 20.0
+# Context local suficient pentru a repara începutul/finalul fără să
+# retrimitem inutil peste un minut suplimentar de transcript la fiecare candidat.
+RETENTION_CONTEXT_BEFORE = 25.0
+RETENTION_CONTEXT_AFTER = 15.0
 
-# Limite de cost / timp pentru analiza locală.
+# Discovery face selecția largă. Retention produce un singur edit AI concentrat;
+# varianta originală este adăugată automat în Python ca benchmark/fallback.
 RETENTION_MAX_CANDIDATES = 8
-RETENTION_MAX_VARIANTS = 3
+RETENTION_MAX_VARIANTS = 1
 
 # Editarea extractivă rămâne metoda preferată.
 RETENTION_PREFER_ORIGINAL_HOOK = True
-RETENTION_MAX_SEGMENTS = 8
+RETENTION_MAX_SEGMENTS = 6
 
 # Durată orientativă; optimizer-ul nu forțează 45s.
 RETENTION_MIN_CLIP_DURATION = 12.0
 RETENTION_MAX_CLIP_DURATION = 60.0
+
+# Nu consumăm cut/captions/smart-crop pentru candidați pe care analiza
+# detaliată îi consideră prea slabi. Dacă nimic nu trece pragul, păstrăm
+# cel mai bun candidat pentru ca pipeline-ul să poată produce totuși un rezultat.
+RETENTION_MIN_FINAL_SCORE = 55

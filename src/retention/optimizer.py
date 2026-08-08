@@ -15,6 +15,7 @@ from src.config import (
     RETENTION_MIN_CLIP_DURATION,
     RETENTION_MAX_CLIP_DURATION,
     RETENTION_PREFER_ORIGINAL_HOOK,
+    RETENTION_MIN_FINAL_SCORE,
 )
 from src.logger import info, success, warning
 from src.retention.analyzer import RetentionAnalyzer
@@ -45,97 +46,62 @@ def _fallback_clip(candidate: dict, reason: str) -> dict:
     return {
         **candidate,
         "strategy": "extractive_fallback",
-        "segments": [
-            {
-                "start": start,
-                "end": end,
-                "role": "escalation",
-                "reason": reason,
-            }
-        ],
+        "segments": [{"start": start, "end": end, "role": "escalation", "reason": reason}],
         "duration": round(max(0.0, end - start), 3),
-        "retention_score": int(candidate.get("score", 0) or 0),
-        "scores": {},
+        "retention_score": int(candidate.get("scores", {}).get("retention", 0) or 0),
+        "scores": candidate.get("scores", {}),
         "hook": None,
         "retention_anchors": [],
         "retention_risks": [],
-        "timeline": [
-            {
-                "index": 0,
-                "source_start": start,
-                "source_end": end,
-                "target_start": 0.0,
-                "target_end": round(max(0.0, end - start), 3),
-                "role": "escalation",
-            }
-        ],
+        "timeline": [{
+            "index": 0,
+            "source_start": start,
+            "source_end": end,
+            "target_start": 0.0,
+            "target_end": round(max(0.0, end - start), 3),
+            "role": "escalation",
+        }],
     }
 
 
 def _evaluate_variants(transcript: List[dict], variants: List[dict], base_scores: dict):
     evaluated = []
-
     for variant in variants:
         pacing = analyze_segments_pacing(transcript, variant["segments"])
         raw_scores = variant.get("scores") or base_scores
         scores = normalize_scores(raw_scores, pacing)
         final_score = retention_score(scores, variant.get("edit_penalty", 0.0))
-
         item = dict(variant)
         item["pacing_metrics"] = pacing
         item["scores"] = scores
         item["retention_score"] = final_score
         evaluated.append(item)
-
     return evaluated
 
 
 def _removed_segments(candidate: dict, selected_segments: List[dict]) -> List[dict]:
-    # Debug simplu pentru segmente cronologice din interiorul candidatului.
     candidate_start = float(candidate["start"])
     candidate_end = float(candidate["end"])
-
     chronological = sorted(
-        [
-            item
-            for item in selected_segments
-            if item["end"] > candidate_start and item["start"] < candidate_end
-        ],
+        [item for item in selected_segments if item["end"] > candidate_start and item["start"] < candidate_end],
         key=lambda item: item["start"],
     )
-
     removed = []
     cursor = candidate_start
-
     for item in chronological:
         start = max(candidate_start, float(item["start"]))
         end = min(candidate_end, float(item["end"]))
         if start > cursor + 0.15:
-            removed.append(
-                {
-                    "start": round(cursor, 3),
-                    "end": round(start, 3),
-                    "reason": "not_selected_by_retention_edit",
-                }
-            )
+            removed.append({"start": round(cursor, 3), "end": round(start, 3), "reason": "not_selected_by_retention_edit"})
         cursor = max(cursor, end)
-
     if cursor < candidate_end - 0.15:
-        removed.append(
-            {
-                "start": round(cursor, 3),
-                "end": round(candidate_end, 3),
-                "reason": "not_selected_by_retention_edit",
-            }
-        )
-
+        removed.append({"start": round(cursor, 3), "end": round(candidate_end, 3), "reason": "not_selected_by_retention_edit"})
     return removed
 
 
 def optimize_retention(video_name: str):
     transcript_path = TRANSCRIPT_DIR / f"{video_name}.json"
     highlights_path = HIGHLIGHTS_DIR / f"{video_name}.json"
-
     transcript = _load_json(transcript_path)
     candidates = _load_json(highlights_path)
 
@@ -143,7 +109,6 @@ def optimize_retention(video_name: str):
         warning("Nu există candidați pentru optimizarea retenției.")
         return highlights_path
 
-    # Păstrăm candidații originali pentru debugging/comparații.
     candidate_backup = HIGHLIGHTS_DIR / f"{video_name}_candidates.json"
     _save_json(candidate_backup, candidates)
 
@@ -152,13 +117,11 @@ def optimize_retention(video_name: str):
 
     analyzer = RetentionAnalyzer()
     optimized = []
-
     limited_candidates = candidates[:RETENTION_MAX_CANDIDATES]
     info(f"Optimizez retenția pentru {len(limited_candidates)} candidați...")
 
     for index, candidate in enumerate(limited_candidates, start=1):
         info(f"Retention candidat {index}/{len(limited_candidates)}")
-
         try:
             context = build_context(
                 transcript,
@@ -166,13 +129,11 @@ def optimize_retention(video_name: str):
                 RETENTION_CONTEXT_BEFORE,
                 RETENTION_CONTEXT_AFTER,
             )
-
             candidate_pacing = analyze_pacing(
                 transcript,
                 context["candidate_start"],
                 context["candidate_end"],
             )
-
             analysis = analyzer.analyze(
                 context,
                 candidate_pacing,
@@ -203,20 +164,16 @@ def optimize_retention(video_name: str):
                 variants,
                 analysis.get("scores", {}),
             )
-
             selected = max(evaluated, key=lambda item: item["retention_score"])
             timeline = build_timeline(selected["segments"])
 
             ai_risks = analysis.get("retention_risks", [])
             all_risks = list(ai_risks) + list(candidate_pacing.get("deterministic_risks", []))
-
             mapped_anchors = remap_items(analysis.get("retention_anchors", []), timeline)
             mapped_risks = remap_items(all_risks, timeline)
             mapped_open_loops = remap_items(analysis.get("open_loops", []), timeline)
             mapped_pattern_interrupts = remap_items(analysis.get("pattern_interrupts", []), timeline)
-            retention_timeline = build_retention_buckets(
-                selected["duration"], mapped_anchors, mapped_risks
-            )
+            retention_timeline = build_retention_buckets(selected["duration"], mapped_anchors, mapped_risks)
 
             selected_clip = {
                 **candidate,
@@ -238,8 +195,6 @@ def optimize_retention(video_name: str):
                 "removed_segments": _removed_segments(candidate, selected["segments"]),
             }
 
-            optimized.append(selected_clip)
-
             debug_payload = {
                 "candidate": candidate,
                 "context": {
@@ -256,28 +211,44 @@ def optimize_retention(video_name: str):
             }
             _save_json(debug_dir / f"clip_{index}.json", debug_payload)
 
-            success(
-                f"Retention {index}: {selected_clip['retention_score']}/100 | "
-                f"{selected_clip['duration']:.1f}s | {selected_clip['content_type']}"
-            )
+            if selected_clip["retention_score"] >= RETENTION_MIN_FINAL_SCORE:
+                optimized.append(selected_clip)
+                success(
+                    f"Retention {index}: {selected_clip['retention_score']}/100 | "
+                    f"{selected_clip['duration']:.1f}s | {selected_clip['content_type']}"
+                )
+            else:
+                warning(
+                    f"Retention {index}: {selected_clip['retention_score']}/100 sub pragul "
+                    f"{RETENTION_MIN_FINAL_SCORE}; candidatul nu va fi randat."
+                )
 
         except Exception as exc:
             warning(f"Retention candidat {index} a eșuat: {exc}")
             fallback = _fallback_clip(candidate, f"retention_error: {exc}")
-            optimized.append(fallback)
-            _save_json(
-                debug_dir / f"clip_{index}.json",
-                {"candidate": candidate, "error": str(exc), "selected": fallback},
-            )
+            _save_json(debug_dir / f"clip_{index}.json", {"candidate": candidate, "error": str(exc), "selected": fallback})
+            if fallback["retention_score"] >= RETENTION_MIN_FINAL_SCORE:
+                optimized.append(fallback)
+                warning(f"Folosesc candidatul original ca fallback ({fallback['retention_score']}/100).")
 
     if len(candidates) > len(limited_candidates):
         warning(
             f"{len(candidates) - len(limited_candidates)} candidați cu scor mai mic au fost "
-            f"săriți pentru a limita timpul de procesare. Mărește RETENTION_MAX_CANDIDATES dacă vrei mai mulți."
+            f"săriți pentru a limita timpul de procesare."
         )
 
-    # Sortăm după scorul final, dar păstrăm toate variantele selectate.
     optimized.sort(key=lambda item: item.get("retention_score", 0), reverse=True)
+
+    if not optimized and limited_candidates:
+        warning(
+            "Niciun candidat nu a trecut pragul final de retenție; păstrez cel mai bun "
+            "candidat original pentru a evita un pipeline fără rezultat."
+        )
+        best_candidate = max(
+            limited_candidates,
+            key=lambda item: float(item.get("scores", {}).get("retention", 0) or 0),
+        )
+        optimized = [_fallback_clip(best_candidate, "best_candidate_below_final_threshold")]
 
     _save_json(highlights_path, optimized)
     success(f"Retention optimization terminat: {len(optimized)} Shorts pregătite.")
