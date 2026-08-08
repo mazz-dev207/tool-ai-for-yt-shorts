@@ -65,3 +65,8 @@ RETENTION_MAX_SEGMENTS = 6
 # Durată orientativă; optimizer-ul nu forțează 45s.
 RETENTION_MIN_CLIP_DURATION = 12.0
 RETENTION_MAX_CLIP_DURATION = 60.0
+
+# Nu consumăm cut/captions/smart-crop pentru candidați pe care analiza
+# detaliată îi consideră prea slabi. Dacă nimic nu trece pragul, păstrăm
+# cel mai bun candidat pentru ca pipeline-ul să poată produce totuși un rezultat.
+RETENTION_MIN_FINAL_SCORE = 55
