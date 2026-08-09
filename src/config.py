@@ -101,7 +101,7 @@ RETENTION_MIN_FINAL_SCORE = 55
 # Gemini Highlight Judge
 # --------------------------------------------------
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip()
 GEMINI_ENABLED = _env_bool("GEMINI_ENABLED", True)
 HIGHLIGHT_MODE = os.getenv("HIGHLIGHT_MODE", "legacy").strip().lower()
 CONTENT_PROFILE = os.getenv("CONTENT_PROFILE", "auto").strip().lower()
