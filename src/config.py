@@ -1,7 +1,47 @@
 from pathlib import Path
+import os
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _load_local_env() -> None:
+    env_path = BASE_DIR / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+_load_local_env()
 
 # Foldere proiect
 INPUT_DIR = BASE_DIR / "input"
@@ -47,26 +87,30 @@ VIDEO_HEIGHT = 1920
 # Retention Engine
 # --------------------------------------------------
 RETENTION_ENABLED = True
-
-# Context local suficient pentru a repara începutul/finalul fără să
-# retrimitem inutil peste un minut suplimentar de transcript la fiecare candidat.
 RETENTION_CONTEXT_BEFORE = 25.0
 RETENTION_CONTEXT_AFTER = 15.0
-
-# Discovery face selecția largă. Retention produce un singur edit AI concentrat;
-# varianta originală este adăugată automat în Python ca benchmark/fallback.
 RETENTION_MAX_CANDIDATES = 8
 RETENTION_MAX_VARIANTS = 1
-
-# Editarea extractivă rămâne metoda preferată.
 RETENTION_PREFER_ORIGINAL_HOOK = True
 RETENTION_MAX_SEGMENTS = 6
-
-# Durată orientativă; optimizer-ul nu forțează 45s.
 RETENTION_MIN_CLIP_DURATION = 12.0
 RETENTION_MAX_CLIP_DURATION = 60.0
-
-# Nu consumăm cut/captions/smart-crop pentru candidați pe care analiza
-# detaliată îi consideră prea slabi. Dacă nimic nu trece pragul, păstrăm
-# cel mai bun candidat pentru ca pipeline-ul să poată produce totuși un rezultat.
 RETENTION_MIN_FINAL_SCORE = 55
+
+# --------------------------------------------------
+# Gemini Highlight Judge
+# --------------------------------------------------
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+GEMINI_ENABLED = _env_bool("GEMINI_ENABLED", True)
+HIGHLIGHT_MODE = os.getenv("HIGHLIGHT_MODE", "legacy").strip().lower()
+CONTENT_PROFILE = os.getenv("CONTENT_PROFILE", "auto").strip().lower()
+GEMINI_CONTEXT_BEFORE = _env_float("GEMINI_CONTEXT_BEFORE", 8.0)
+GEMINI_CONTEXT_AFTER = _env_float("GEMINI_CONTEXT_AFTER", 8.0)
+GEMINI_MAX_CANDIDATES = _env_int("GEMINI_MAX_CANDIDATES", 60)
+GEMINI_TOP_HIGHLIGHTS = _env_int("GEMINI_TOP_HIGHLIGHTS", 10)
+GEMINI_MIN_SCORE = _env_int("GEMINI_MIN_SCORE", 55)
+GEMINI_OVERLAP_THRESHOLD = _env_float("GEMINI_OVERLAP_THRESHOLD", 0.60)
+GEMINI_MAX_RETRIES = _env_int("GEMINI_MAX_RETRIES", 2)
+GEMINI_PROMPT_VERSION = "gemini-highlight-v1"
+GEMINI_CACHE_DIR = BASE_DIR / "cache" / "gemini_highlights"
