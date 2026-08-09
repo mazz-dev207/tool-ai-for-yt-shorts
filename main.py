@@ -55,7 +55,7 @@ def parse_args():
         "--content-profile",
         choices=["auto", "gaming", "entertainment", "podcast", "reaction", "general"],
         default=CONTENT_PROFILE,
-        help="Profilul folosit de Gemini Judge.",
+        help="Profil folosit de Gemini Judge și SmartCrop.",
     )
     return parser.parse_args()
 
@@ -130,7 +130,7 @@ def main():
     info(f"7/7 Randare {len(clips)} clipuri...")
     render_started = time.time()
     for clip in clips:
-        render(clip.stem)
+        render(clip.stem, args.content_profile)
     timings["render"] = time.time() - render_started
 
     total_elapsed = time.time() - pipeline_started
