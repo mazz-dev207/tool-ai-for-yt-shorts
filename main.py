@@ -1,4 +1,5 @@
 from pathlib import Path
+import argparse
 import shutil
 import sys
 import time
@@ -12,11 +13,14 @@ from src.config import (
     FINAL_DIR,
     TEMP_DIR,
     RETENTION_ENABLED,
+    HIGHLIGHT_MODE,
+    CONTENT_PROFILE,
 )
 from src.logger import info, success
 from src.transcribe import transcribe
 from src.chunk_transcript import chunk_transcript
 from src.highlight_selector import select_highlights
+from src.highlights.gemini_pipeline import run_gemini_highlight_stage
 from src.retention.optimizer import optimize_retention
 from src.cut import cut
 from src.caption_engine import CaptionEngine
@@ -35,16 +39,30 @@ def clean_folder(folder: Path):
 def timed_step(func, *args, **kwargs):
     started = time.time()
     result = func(*args, **kwargs)
-    elapsed = time.time() - started
-    return result, elapsed
+    return result, time.time() - started
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="AI Shorts Pipeline")
+    parser.add_argument("video_name", help="Numele fișierului video fără extensia .mp4")
+    parser.add_argument(
+        "--highlight-mode",
+        choices=["legacy", "gemini", "compare"],
+        default=HIGHLIGHT_MODE,
+        help="legacy, gemini sau compare; implicit vine din .env/config",
+    )
+    parser.add_argument(
+        "--content-profile",
+        choices=["auto", "gaming", "entertainment", "podcast", "reaction", "general"],
+        default=CONTENT_PROFILE,
+        help="Profilul folosit de Gemini Judge.",
+    )
+    return parser.parse_args()
 
 
 def main():
-    if len(sys.argv) < 2:
-        print('Utilizare: python main.py "video_name"')
-        sys.exit(1)
-
-    video_name = " ".join(sys.argv[1:])
+    args = parse_args()
+    video_name = args.video_name
     video_path = INPUT_DIR / f"{video_name}.mp4"
 
     if not video_path.exists():
@@ -75,6 +93,13 @@ def main():
 
     info("3/7 Candidate discovery...")
     _, timings["candidate_discovery"] = timed_step(select_highlights, video_name)
+    _, timings["gemini_judge"] = timed_step(
+        run_gemini_highlight_stage,
+        video_name,
+        video_path,
+        args.highlight_mode,
+        args.content_profile,
+    )
 
     if RETENTION_ENABLED:
         info("4/7 Optimizare pentru retenție...")
@@ -118,6 +143,7 @@ def main():
         "transcription",
         "chunking",
         "candidate_discovery",
+        "gemini_judge",
         "retention",
         "cut",
         "captions",
