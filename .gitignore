@@ -16,6 +16,7 @@ highlights/
 subtitles/
 logs/
 scenes/
+cache/
 
 # Videos / audio
 *.mp4
