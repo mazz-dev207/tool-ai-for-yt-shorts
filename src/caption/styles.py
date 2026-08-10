@@ -12,7 +12,9 @@ from src.config import (
     OUTLINE,
     SHADOW,
     ALIGNMENT,
-    MARGIN_V
+    MARGIN_V,
+    CAPTION_MARGIN_L,
+    CAPTION_MARGIN_R,
 )
 
 
@@ -123,10 +125,6 @@ TIKTOK = CaptionStyle(
 # --------------------------------------------------
 # REELS
 # --------------------------------------------------
-#
-# Puțin mai curat decât TikTok:
-# outline mai fin și shadow mai discret.
-#
 
 REELS = CaptionStyle(
 
@@ -289,19 +287,12 @@ MINIMAL = CaptionStyle(
 # --------------------------------------------------
 
 STYLES = {
-
-    # "modern" devine presetul recomandat pentru Shorts.
     "modern": TIKTOK,
-
     "tiktok": TIKTOK,
-
     "reels": REELS,
-
     "capcut": CAPCUT,
-
     "submagic": SUBMAGIC,
-
-    "minimal": MINIMAL
+    "minimal": MINIMAL,
 }
 
 
@@ -310,56 +301,29 @@ STYLES = {
 # --------------------------------------------------
 
 def get_style(name: str) -> CaptionStyle:
-    """
-    Returnează presetul cerut.
-
-    Dacă CAPTION_STYLE este greșit sau necunoscut,
-    folosim TikTok în loc să aruncăm KeyError.
-    """
-
     if not name:
         return TIKTOK
-
-    return STYLES.get(
-        name.strip().lower(),
-        TIKTOK
-    )
+    return STYLES.get(name.strip().lower(), TIKTOK)
 
 
 # --------------------------------------------------
 # DEFAULT STYLE
 # --------------------------------------------------
-#
-# Păstrăm compatibilitatea cu config.py.
-# Valorile din config pot suprascrie presetul ales.
-#
 
-BASE_STYLE = get_style(
-    CAPTION_STYLE
-)
-
+BASE_STYLE = get_style(CAPTION_STYLE)
 
 DEFAULT_STYLE = replace(
-
     BASE_STYLE,
-
     font=FONT_NAME,
-
     font_size=FONT_SIZE,
-
     primary_color=FONT_COLOR,
-
     secondary_color=HIGHLIGHT_COLOR,
-
     outline_color=OUTLINE_COLOR,
-
     back_color=BACKGROUND_COLOR,
-
     outline=OUTLINE,
-
     shadow=SHADOW,
-
     alignment=ALIGNMENT,
-
-    margin_v=MARGIN_V
+    margin_v=MARGIN_V,
+    margin_l=CAPTION_MARGIN_L,
+    margin_r=CAPTION_MARGIN_R,
 )
