@@ -8,6 +8,7 @@ from src.config import (
     TEMP_DIR,
     VIDEO_WIDTH,
     VIDEO_HEIGHT,
+    SMARTCROP_BLURRED_FILL_ENABLED,
     SMARTCROP_WEBCAM_PERSISTENCE,
 )
 from src.logger import info, success, warning
@@ -19,6 +20,10 @@ from src.smart_crop_v2 import (
     save_smartcrop_debug,
     validate_layout_plan,
     write_gameplay_sendcmd,
+)
+from src.smartcrop_compositor import (
+    build_gameplay_webcam_stack_filter,
+    build_safe_cover_stack_filter,
 )
 
 
@@ -57,7 +62,6 @@ def _webcam_corner(plan) -> str:
     webcam = plan.webcam_region
     if webcam is None:
         return "none"
-
     center_x = webcam.x + webcam.w / 2
     center_y = webcam.y + webcam.h / 2
     horizontal = "left" if center_x < plan.input_width / 2 else "right"
@@ -85,25 +89,40 @@ def _log_smartcrop_decision(plan) -> None:
         f"confidence={float(plan.confidence):.2f} | "
         f"source={plan.input_width}x{plan.input_height}"
     )
-
     reason = getattr(plan, "decision_reason", "")
     if reason:
         info(f"[SMARTCROP] Reason: {reason}")
 
-    if plan.mode == "GAMEPLAY_WEBCAM" and plan.webcam_region is not None:
+    if plan.mode == "GAMEPLAY_WEBCAM_STACK" and plan.webcam_region is not None:
         webcam = plan.webcam_region
+        layout = getattr(plan, "layout_metadata", {}) or {}
         info(
-            f"[SMARTCROP] Webcam: {_webcam_corner(plan)} | "
+            f"[SMARTCROP] Webcam source: {_webcam_corner(plan)} | "
             f"bbox=x{webcam.x},y{webcam.y},w{webcam.w},h{webcam.h}"
         )
         info(
-            f"[SMARTCROP] Layout: GAMEPLAY_TOP_WEBCAM_BOTTOM | "
-            f"gameplay={VIDEO_WIDTH}x{plan.gameplay_output_height} | "
-            f"webcam={VIDEO_WIDTH}x{plan.webcam_output_height}"
+            "[LayoutPolicy] type=GAMEPLAY_WEBCAM_STACK | webcam_position=top | "
+            f"gameplay_position=bottom | webcam_ratio={layout.get('webcam_ratio', 0):.2f} | "
+            f"gameplay_ratio={layout.get('gameplay_ratio', 0):.2f} | "
+            f"split_y={layout.get('split_y', plan.webcam_output_height)}"
+        )
+        info(
+            f"[SMARTCROP] Panels: webcam={VIDEO_WIDTH}x{plan.webcam_output_height} TOP | "
+            f"gameplay={VIDEO_WIDTH}x{plan.gameplay_output_height} BOTTOM | "
+            f"blurred_fill={bool(layout.get('blurred_fill', SMARTCROP_BLURRED_FILL_ENABLED))}"
         )
         info(
             f"[SMARTCROP] Tracking: focus_samples={len(plan.focus_points)} | "
             f"reaction_signals={len(plan.reaction_events)}"
+        )
+        _log_tracking_summary(plan)
+        return
+
+    if plan.mode == "GAMEPLAY_WEBCAM" and plan.webcam_region is not None:
+        webcam = plan.webcam_region
+        info(
+            f"[SMARTCROP] Legacy webcam layout source={_webcam_corner(plan)} | "
+            f"bbox=x{webcam.x},y{webcam.y},w{webcam.w},h{webcam.h}"
         )
         _log_tracking_summary(plan)
         return
@@ -132,7 +151,7 @@ def _log_smartcrop_decision(plan) -> None:
     info(
         "[SMARTCROP] Using existing SmartCrop fallback | "
         f"persistent_webcam_confidence={float(plan.confidence):.2f} | "
-        f"required={SMARTCROP_WEBCAM_PERSISTENCE:.2f}"
+        f"legacy_required={SMARTCROP_WEBCAM_PERSISTENCE:.2f}"
     )
 
 
@@ -142,14 +161,12 @@ def _render_legacy(video: Path, subtitle: Path, output: Path, plan, clip_name: s
     initial_x, initial_y = initial_crop_xy(plan)
     subtitle_path = escape_filter_path(subtitle)
     command_path = escape_filter_path(command_file)
-
     filter_chain = (
         f"sendcmd=f='{command_path}',"
         f"crop@smart=w={plan.crop_width}:h={plan.crop_height}:x={initial_x}:y={initial_y},"
         f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT},"
         f"subtitles='{subtitle_path}'"
     )
-
     command = [
         "ffmpeg", "-y", "-i", str(video),
         "-vf", filter_chain,
@@ -158,17 +175,76 @@ def _render_legacy(video: Path, subtitle: Path, output: Path, plan, clip_name: s
     _run(command, "FFmpeg a eșuat la SmartCrop legacy.")
 
 
+def _run_stack_filter(video: Path, output: Path, filter_complex: str, error_message: str) -> None:
+    command = [
+        "ffmpeg", "-y", "-i", str(video),
+        "-filter_complex", filter_complex,
+        "-map", "[vout]",
+        "-map", "0:a?",
+        *_encode_args(output),
+    ]
+    _run(command, error_message)
+
+
+def _render_gameplay_webcam_stack(
+    video: Path,
+    subtitle: Path,
+    output: Path,
+    plan,
+    clip_name: str,
+) -> None:
+    if not validate_layout_plan(plan) or plan.webcam_region is None:
+        raise ValueError("SmartCrop GAMEPLAY_WEBCAM_STACK plan invalid")
+
+    command_file = TEMP_DIR / f"{clip_name}_gameplay_stack_crop.cmd"
+    write_gameplay_sendcmd(plan, command_file)
+    initial_x, initial_y = initial_gameplay_xy(plan)
+    subtitle_path = escape_filter_path(subtitle)
+    command_path = escape_filter_path(command_file)
+
+    try:
+        filter_complex = build_gameplay_webcam_stack_filter(
+            plan=plan,
+            subtitle_path=subtitle_path,
+            command_path=command_path,
+            initial_x=initial_x,
+            initial_y=initial_y,
+            blurred_fill=SMARTCROP_BLURRED_FILL_ENABLED,
+        )
+        _run_stack_filter(
+            video,
+            output,
+            filter_complex,
+            "FFmpeg a eșuat la GAMEPLAY_WEBCAM_STACK blurred-fill compositor.",
+        )
+    except Exception as exc:
+        warning(f"[SMARTCROP] Blurred fill failed: {exc}")
+        warning("[SMARTCROP] Retry cu content-based cover fill, fără black bars.")
+        fallback_filter = build_safe_cover_stack_filter(
+            plan=plan,
+            subtitle_path=subtitle_path,
+            command_path=command_path,
+            initial_x=initial_x,
+            initial_y=initial_y,
+        )
+        _run_stack_filter(
+            video,
+            output,
+            fallback_filter,
+            "FFmpeg a eșuat și la GAMEPLAY_WEBCAM_STACK safe cover fallback.",
+        )
+
+
 def _render_gameplay_webcam(video: Path, subtitle: Path, output: Path, plan, clip_name: str) -> None:
+    """Legacy GAMEPLAY_WEBCAM renderer retained for backward compatibility."""
     if not validate_layout_plan(plan) or plan.webcam_region is None:
         raise ValueError("SmartCrop GAMEPLAY_WEBCAM plan invalid")
-
     command_file = TEMP_DIR / f"{clip_name}_gameplay_crop.cmd"
     write_gameplay_sendcmd(plan, command_file)
     initial_x, initial_y = initial_gameplay_xy(plan)
     subtitle_path = escape_filter_path(subtitle)
     command_path = escape_filter_path(command_file)
     webcam = plan.webcam_region
-
     filter_complex = (
         "[0:v]split=2[game_src][cam_src];"
         f"[game_src]sendcmd=f='{command_path}',"
@@ -178,30 +254,19 @@ def _render_gameplay_webcam(video: Path, subtitle: Path, output: Path, plan, cli
         f"[cam_src]crop=w={webcam.w}:h={webcam.h}:x={webcam.x}:y={webcam.y},"
         f"scale={VIDEO_WIDTH}:{plan.webcam_output_height}:force_original_aspect_ratio=decrease,"
         f"pad={VIDEO_WIDTH}:{plan.webcam_output_height}:(ow-iw)/2:(oh-ih)/2[webcam];"
-        f"[gameplay][webcam]vstack=inputs=2,"
-        f"subtitles='{subtitle_path}'[vout]"
+        f"[gameplay][webcam]vstack=inputs=2,subtitles='{subtitle_path}'[vout]"
     )
-
-    command = [
-        "ffmpeg", "-y", "-i", str(video),
-        "-filter_complex", filter_complex,
-        "-map", "[vout]",
-        "-map", "0:a?",
-        *_encode_args(output),
-    ]
-    _run(command, "FFmpeg a eșuat la SmartCrop GAMEPLAY_WEBCAM.")
+    _run_stack_filter(video, output, filter_complex, "FFmpeg a eșuat la legacy GAMEPLAY_WEBCAM.")
 
 
 def _render_gameplay_only(video: Path, subtitle: Path, output: Path, plan, clip_name: str) -> None:
     if plan.gameplay_crop_width <= 0 or plan.gameplay_crop_height <= 0 or not plan.focus_points:
         raise ValueError("SmartCrop GAMEPLAY_ONLY plan invalid")
-
     command_file = TEMP_DIR / f"{clip_name}_gameplay_only_crop.cmd"
     write_gameplay_sendcmd(plan, command_file)
     initial_x, initial_y = initial_gameplay_xy(plan)
     subtitle_path = escape_filter_path(subtitle)
     command_path = escape_filter_path(command_file)
-
     filter_chain = (
         f"sendcmd=f='{command_path}',"
         f"crop@gameplay=w={plan.gameplay_crop_width}:h={plan.gameplay_crop_height}:"
@@ -209,7 +274,6 @@ def _render_gameplay_only(video: Path, subtitle: Path, output: Path, plan, clip_
         f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT},"
         f"subtitles='{subtitle_path}'"
     )
-
     command = [
         "ffmpeg", "-y", "-i", str(video),
         "-vf", filter_chain,
@@ -222,11 +286,9 @@ def _render_podcast_multi_speaker(video: Path, subtitle: Path, output: Path, pla
     regions = getattr(plan, "speaker_regions", [])
     if len(regions) < 2:
         raise ValueError("SmartCrop PODCAST_MULTI_SPEAKER plan invalid")
-
     first, second = regions[:2]
     half_height = VIDEO_HEIGHT // 2
     subtitle_path = escape_filter_path(subtitle)
-
     filter_complex = (
         "[0:v]split=2[s1][s2];"
         f"[s1]crop=w={first.w}:h={first.h}:x={first.x}:y={first.y},"
@@ -237,7 +299,6 @@ def _render_podcast_multi_speaker(video: Path, subtitle: Path, output: Path, pla
         f"pad={VIDEO_WIDTH}:{VIDEO_HEIGHT - half_height}:(ow-iw)/2:(oh-ih)/2[second];"
         f"[first][second]vstack=inputs=2,subtitles='{subtitle_path}'[vout]"
     )
-
     command = [
         "ffmpeg", "-y", "-i", str(video),
         "-filter_complex", filter_complex,
@@ -251,7 +312,6 @@ def _render_podcast_multi_speaker(video: Path, subtitle: Path, output: Path, pla
 def render(clip_name: str, content_profile: str = "auto"):
     video = OUTPUT_DIR / f"{clip_name}.mp4"
     subtitle = SUBTITLES_DIR / f"{clip_name}.ass"
-
     if not video.exists():
         raise FileNotFoundError(f"Video lipsă: {video}")
     if not subtitle.exists():
@@ -270,6 +330,15 @@ def render(clip_name: str, content_profile: str = "auto"):
 
     _log_smartcrop_decision(plan)
     save_smartcrop_debug(clip_name, plan)
+
+    if plan.mode == "GAMEPLAY_WEBCAM_STACK":
+        try:
+            _render_gameplay_webcam_stack(video, subtitle, output, plan, clip_name)
+            success(f"Clip randat: {output.name}")
+            return output
+        except Exception as exc:
+            warning(f"[SMARTCROP] GAMEPLAY_WEBCAM_STACK render failed: {exc}")
+            warning("[SMARTCROP] Falling back to existing SmartCrop")
 
     if plan.mode == "GAMEPLAY_WEBCAM":
         try:
