@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -9,17 +8,24 @@ from typing import Optional
 import cv2
 
 from src.config import (
+    CAPTION_MARGIN_L,
+    CAPTION_MARGIN_R,
     HIGHLIGHTS_DIR,
+    SMARTCROP_BLURRED_FILL_ENABLED,
     SMARTCROP_DEBUG,
     SMARTCROP_DETECT_GAMEPLAY_WEBCAM,
-    SMARTCROP_GAMEPLAY_RATIO,
     SMARTCROP_MAX_CROP_VELOCITY,
     SMARTCROP_MOVEMENT_DEAD_ZONE,
     SMARTCROP_SAMPLE_INTERVAL,
+    SMARTCROP_STACK_REACTION_EVENT_THRESHOLD,
+    SMARTCROP_STACK_REACTION_WEBCAM_RATIO,
+    SMARTCROP_STACK_STRONG_REACTION_EVENT_THRESHOLD,
+    SMARTCROP_STACK_STRONG_REACTION_WEBCAM_RATIO,
+    SMARTCROP_STACK_WEBCAM_RATIO,
+    SMARTCROP_STACK_WEBCAM_RATIO_MAX,
+    SMARTCROP_STACK_WEBCAM_RATIO_MIN,
     SMARTCROP_V2_ENABLED,
-    SMARTCROP_WEBCAM_CORNER_ZONE,
-    SMARTCROP_WEBCAM_MAX_AREA_RATIO,
-    SMARTCROP_WEBCAM_MIN_AREA_RATIO,
+    SMARTCROP_WEBCAM_AVOIDANCE_MARGIN,
     SMARTCROP_WEBCAM_PERSISTENCE,
     VIDEO_HEIGHT,
     VIDEO_WIDTH,
@@ -27,6 +33,7 @@ from src.config import (
 from src.gameplay_tracker import build_stable_gameplay_track
 from src.logger import info, warning
 from src.smart_crop import CropPlan, analyze_smart_crop
+from src.webcam_detector import detect_webcam
 
 
 @dataclass(frozen=True)
@@ -71,6 +78,10 @@ class SmartCropV2Plan:
     reaction_events: list[dict] = field(default_factory=list)
     tracking_debug: list[dict] = field(default_factory=list)
     tracking_summary: dict = field(default_factory=dict)
+    webcam_detection_debug: dict = field(default_factory=dict)
+    webcam_candidates: list[dict] = field(default_factory=list)
+    layout_metadata: dict = field(default_factory=dict)
+    decision_reason: str = ""
 
 
 def _even(value: float) -> int:
@@ -105,10 +116,11 @@ def _detect_faces(frame) -> list[tuple[int, int, int, int]]:
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     height, width = gray.shape[:2]
     scale = min(1.0, 640.0 / max(1.0, float(width)))
-    if scale < 1.0:
-        small = cv2.resize(gray, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
-    else:
-        small = gray
+    small = (
+        cv2.resize(gray, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
+        if scale < 1.0
+        else gray
+    )
     faces = _FACE_DETECTOR.detectMultiScale(
         small,
         scaleFactor=1.10,
@@ -118,34 +130,9 @@ def _detect_faces(frame) -> list[tuple[int, int, int, int]]:
     if scale == 1.0:
         return [tuple(map(int, face)) for face in faces]
     return [
-        (
-            int(x / scale),
-            int(y / scale),
-            int(w / scale),
-            int(h / scale),
-        )
+        (int(x / scale), int(y / scale), int(w / scale), int(h / scale))
         for x, y, w, h in faces
     ]
-
-
-def _corner_for_box(box: tuple[int, int, int, int], width: int, height: int) -> str | None:
-    x, y, w, h = box
-    cx = x + w / 2
-    cy = y + h / 2
-    zone = SMARTCROP_WEBCAM_CORNER_ZONE
-    left = cx <= width * zone
-    right = cx >= width * (1.0 - zone)
-    top = cy <= height * zone
-    bottom = cy >= height * (1.0 - zone)
-    if top and left:
-        return "top-left"
-    if top and right:
-        return "top-right"
-    if bottom and left:
-        return "bottom-left"
-    if bottom and right:
-        return "bottom-right"
-    return None
 
 
 def infer_persistent_webcam(
@@ -153,64 +140,24 @@ def infer_persistent_webcam(
     width: int,
     height: int,
 ) -> tuple[Rect | None, float, str | None]:
-    if not detections:
-        return None, 0.0, None
+    """Backward-compatible public helper, now powered by the scored detector.
 
-    by_corner: dict[str, list[tuple[int, int, int, int]]] = {}
-    frame_hits: dict[str, int] = {}
-    frame_area = max(1.0, float(width * height))
-
-    for frame_faces in detections:
-        corners_seen: set[str] = set()
-        for box in frame_faces:
-            x, y, w, h = box
-            area_ratio = (w * h) / frame_area
-            if not (SMARTCROP_WEBCAM_MIN_AREA_RATIO <= area_ratio <= SMARTCROP_WEBCAM_MAX_AREA_RATIO):
-                continue
-            corner = _corner_for_box(box, width, height)
-            if corner is None:
-                continue
-            by_corner.setdefault(corner, []).append(box)
-            corners_seen.add(corner)
-        for corner in corners_seen:
-            frame_hits[corner] = frame_hits.get(corner, 0) + 1
-
-    if not frame_hits:
-        return None, 0.0, None
-
-    best_corner = max(frame_hits, key=frame_hits.get)
-    persistence = frame_hits[best_corner] / max(1, len(detections))
-    if persistence < SMARTCROP_WEBCAM_PERSISTENCE:
-        return None, persistence, best_corner
-
-    boxes = by_corner.get(best_corner, [])
-    if not boxes:
-        return None, persistence, best_corner
-
-    centers_x = [x + w / 2 for x, _y, w, _h in boxes]
-    centers_y = [y + h / 2 for _x, y, _w, h in boxes]
-    if len(centers_x) >= 2:
-        normalized_jitter = max(
-            statistics.pstdev(centers_x) / max(1.0, width),
-            statistics.pstdev(centers_y) / max(1.0, height),
-        )
-        if normalized_jitter > 0.08:
-            return None, persistence * 0.5, best_corner
-
-    median_x = statistics.median([box[0] for box in boxes])
-    median_y = statistics.median([box[1] for box in boxes])
-    median_w = statistics.median([box[2] for box in boxes])
-    median_h = statistics.median([box[3] for box in boxes])
-
-    pad_x = max(8, int(median_w * 0.65))
-    pad_y = max(8, int(median_h * 0.85))
-    rect = Rect(
-        x=int(median_x - pad_x),
-        y=int(median_y - pad_y),
-        w=int(median_w + pad_x * 2),
-        h=int(median_h + pad_y * 2),
-    )
-    return validate_crop_bounds(rect, width, height), persistence, best_corner
+    Existing callers historically interpret confidence as face persistence, so
+    this wrapper keeps that meaning while detect_content_layout uses final_score.
+    """
+    samples = [(float(index), None, faces) for index, faces in enumerate(detections or [])]
+    result = detect_webcam(samples, width, height)
+    candidate = result.selected
+    if candidate is None:
+        top = result.candidates[0] if result.candidates else None
+        confidence = top.face_persistence_score if top else 0.0
+        corner = top.corner if top else None
+        return None, confidence, corner
+    roi = candidate.roi
+    rect = validate_crop_bounds(Rect(roi.x, roi.y, roi.w, roi.h), width, height)
+    if candidate.face_persistence_score < SMARTCROP_WEBCAM_PERSISTENCE:
+        return None, candidate.face_persistence_score, candidate.corner
+    return rect, candidate.face_persistence_score, candidate.corner
 
 
 def _calculate_crop_size_for_aspect(width: int, height: int, target_ratio: float) -> tuple[int, int]:
@@ -224,32 +171,6 @@ def _calculate_crop_size_for_aspect(width: int, height: int, target_ratio: float
     return min(width, crop_w), min(height, crop_h)
 
 
-def _mask_rect(image, rect: Rect | None):
-    if rect is None:
-        return image
-    x1 = max(0, rect.x)
-    y1 = max(0, rect.y)
-    x2 = min(image.shape[1], rect.x2)
-    y2 = min(image.shape[0], rect.y2)
-    if x2 > x1 and y2 > y1:
-        image[y1:y2, x1:x2] = 0
-    return image
-
-
-def _motion_center(previous_gray, current_gray, webcam: Rect | None) -> tuple[float, float] | None:
-    diff = cv2.absdiff(previous_gray, current_gray)
-    diff = cv2.GaussianBlur(diff, (5, 5), 0)
-    _, mask = cv2.threshold(diff, 24, 255, cv2.THRESH_BINARY)
-    mask = _mask_rect(mask, webcam)
-    active = cv2.countNonZero(mask)
-    if active < mask.shape[0] * mask.shape[1] * 0.004:
-        return None
-    moments = cv2.moments(mask, binaryImage=True)
-    if moments["m00"] <= 0:
-        return None
-    return moments["m10"] / moments["m00"], moments["m01"] / moments["m00"]
-
-
 def smooth_focus_points(
     points: list[FocusPoint],
     crop_width: int,
@@ -257,10 +178,7 @@ def smooth_focus_points(
     frame_width: int,
     frame_height: int,
 ) -> list[FocusPoint]:
-    """Legacy-compatible smoother kept for tests/fallback callers.
-
-    New gameplay paths use gameplay_tracker.build_stable_gameplay_track instead.
-    """
+    """Legacy-compatible smoother kept for tests/fallback callers."""
     if not points:
         return []
     result = [points[0]]
@@ -295,23 +213,108 @@ def _sample_video(video_path: Path):
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = float(capture.get(cv2.CAP_PROP_FPS)) or 30.0
     frame_count = float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration = frame_count / fps if frame_count > 0 else 0.0
+    duration = frame_count / fps if frame_count > 0 else 1.0
 
-    samples: list[tuple[float, object, list[tuple[int, int, int, int]]]] = []
-    time_position = 0.0
-    if duration <= 0:
-        duration = 1.0
+    samples = []
+    position = 0.0
     try:
-        while time_position <= duration + 0.001:
-            capture.set(cv2.CAP_PROP_POS_MSEC, time_position * 1000.0)
+        while position <= duration + 0.001:
+            capture.set(cv2.CAP_PROP_POS_MSEC, position * 1000.0)
             ok, frame = capture.read()
             if not ok:
                 break
-            samples.append((time_position, frame, _detect_faces(frame)))
-            time_position += SMARTCROP_SAMPLE_INTERVAL
+            samples.append((position, frame, _detect_faces(frame)))
+            position += SMARTCROP_SAMPLE_INTERVAL
     finally:
         capture.release()
     return width, height, duration, samples
+
+
+def _detect_reaction_events(samples, webcam: Rect) -> list[dict]:
+    previous_center = None
+    previous_area = None
+    events: list[dict] = []
+    for time_position, _frame, faces in samples:
+        inside = []
+        for face in faces or []:
+            x, y, w, h = face
+            cx = x + w / 2.0
+            cy = y + h / 2.0
+            if webcam.x <= cx <= webcam.x2 and webcam.y <= cy <= webcam.y2:
+                inside.append(face)
+        if not inside:
+            continue
+        face = max(inside, key=lambda box: box[2] * box[3])
+        center = (face[0] + face[2] / 2.0, face[1] + face[3] / 2.0)
+        area = float(face[2] * face[3])
+        if previous_center is not None:
+            movement = ((center[0] - previous_center[0]) ** 2 + (center[1] - previous_center[1]) ** 2) ** 0.5
+            if movement > max(face[2], face[3]) * 0.42:
+                events.append({"time": round(time_position, 3), "type": "face_motion_spike"})
+        if previous_area is not None and previous_area > 0:
+            area_change = abs(area - previous_area) / previous_area
+            if area_change >= 0.32:
+                events.append({"time": round(time_position, 3), "type": "face_scale_spike"})
+        previous_center = center
+        previous_area = area
+    return events
+
+
+def choose_stack_webcam_ratio(reaction_events: list[dict]) -> float:
+    count = len(reaction_events or [])
+    if count >= SMARTCROP_STACK_STRONG_REACTION_EVENT_THRESHOLD:
+        ratio = SMARTCROP_STACK_STRONG_REACTION_WEBCAM_RATIO
+    elif count >= SMARTCROP_STACK_REACTION_EVENT_THRESHOLD:
+        ratio = SMARTCROP_STACK_REACTION_WEBCAM_RATIO
+    else:
+        ratio = SMARTCROP_STACK_WEBCAM_RATIO
+    return _clamp(ratio, SMARTCROP_STACK_WEBCAM_RATIO_MIN, SMARTCROP_STACK_WEBCAM_RATIO_MAX)
+
+
+def _build_layout_metadata(webcam_ratio: float) -> dict:
+    webcam_height = _even(VIDEO_HEIGHT * webcam_ratio)
+    webcam_height = max(2, min(VIDEO_HEIGHT - 2, webcam_height))
+    gameplay_height = VIDEO_HEIGHT - webcam_height
+    return {
+        "type": "GAMEPLAY_WEBCAM_STACK",
+        "webcam_position": "top",
+        "gameplay_position": "bottom",
+        "webcam_ratio": round(webcam_height / VIDEO_HEIGHT, 4),
+        "gameplay_ratio": round(gameplay_height / VIDEO_HEIGHT, 4),
+        "split_y": webcam_height,
+        "webcam_height": webcam_height,
+        "gameplay_height": gameplay_height,
+        "blurred_fill": bool(SMARTCROP_BLURRED_FILL_ENABLED),
+        "caption_safe_area": {
+            "x1": int(CAPTION_MARGIN_L),
+            "x2": int(VIDEO_WIDTH - CAPTION_MARGIN_R),
+            "y1": int(min(VIDEO_HEIGHT - 120, webcam_height + 70)),
+            "y2": int(min(VIDEO_HEIGHT - 120, webcam_height + max(260, gameplay_height * 0.42))),
+        },
+    }
+
+
+def _log_webcam_detection(result) -> None:
+    if not result.candidates:
+        info(f"[WebcamDetector] selected=false reason={result.reason}")
+        return
+    top = result.candidates[0]
+    info(
+        "[WebcamDetector] "
+        f"face_presence={top.face_presence_score:.2f} | "
+        f"face_persistence={top.face_persistence_score:.2f} | "
+        f"roi_stability={top.roi_stability_score:.2f} | "
+        f"geometric_consistency={top.geometric_consistency_score:.2f} | "
+        f"overlay_likelihood={top.overlay_likelihood_score:.2f} | "
+        f"visual_separation={top.visual_separation_score:.2f} | "
+        f"temporal_separation={top.temporal_separation_score:.2f} | "
+        f"false_positive_penalty={top.false_positive_penalty:.2f} | "
+        f"final_score={top.final_score:.2f}"
+    )
+    info(
+        f"[WebcamDetector] candidates={len(result.candidates)} | "
+        f"ambiguous={result.ambiguous} | selected={result.selected is not None} | reason={result.reason}"
+    )
 
 
 def detect_content_layout(video_path: Path) -> SmartCropV2Plan:
@@ -324,10 +327,16 @@ def detect_content_layout(video_path: Path) -> SmartCropV2Plan:
         if not samples:
             raise RuntimeError("Nu există frame-uri pentru analiza SmartCrop 2.0")
 
-        detections = [faces for _time, _frame, faces in samples]
-        webcam, confidence, corner = infer_persistent_webcam(detections, width, height)
+        detection = detect_webcam(samples, width, height)
+        _log_webcam_detection(detection)
+        candidates_debug = [candidate.to_debug_dict() for candidate in detection.candidates]
 
-        if webcam is None or not SMARTCROP_DETECT_GAMEPLAY_WEBCAM or width <= height:
+        if (
+            detection.selected is None
+            or not SMARTCROP_DETECT_GAMEPLAY_WEBCAM
+            or width <= height
+        ):
+            confidence = detection.candidates[0].final_score if detection.candidates else 0.0
             return SmartCropV2Plan(
                 mode="GENERAL",
                 input_width=width,
@@ -335,14 +344,29 @@ def detect_content_layout(video_path: Path) -> SmartCropV2Plan:
                 duration=duration,
                 legacy_plan=legacy,
                 confidence=confidence,
+                webcam_detection_debug={
+                    "selected": False,
+                    "reason": detection.reason,
+                    "ambiguous": detection.ambiguous,
+                },
+                webcam_candidates=candidates_debug,
+                decision_reason="robust webcam detector did not confirm an overlay",
             )
 
-        gameplay_output_height = _even(VIDEO_HEIGHT * SMARTCROP_GAMEPLAY_RATIO)
-        gameplay_output_height = max(2, min(VIDEO_HEIGHT - 2, gameplay_output_height))
-        webcam_output_height = VIDEO_HEIGHT - gameplay_output_height
+        selected = detection.selected
+        webcam = validate_crop_bounds(
+            Rect(selected.roi.x, selected.roi.y, selected.roi.w, selected.roi.h),
+            width,
+            height,
+        )
+        reaction_events = _detect_reaction_events(samples, webcam)
+        webcam_ratio = choose_stack_webcam_ratio(reaction_events)
+        layout = _build_layout_metadata(webcam_ratio)
+        webcam_output_height = int(layout["webcam_height"])
+        gameplay_output_height = int(layout["gameplay_height"])
+
         gameplay_target_ratio = VIDEO_WIDTH / float(gameplay_output_height)
         crop_w, crop_h = _calculate_crop_size_for_aspect(width, height, gameplay_target_ratio)
-
         track, tracking_summary = build_stable_gameplay_track(
             samples,
             crop_width=crop_w,
@@ -356,33 +380,15 @@ def detect_content_layout(video_path: Path) -> SmartCropV2Plan:
             for item in track
         ]
 
-        previous_webcam_center = None
-        reaction_events: list[dict] = []
-        for time_position, _frame, faces in samples:
-            webcam_faces = []
-            for face in faces:
-                x, y, w, h = face
-                cx = x + w / 2
-                cy = y + h / 2
-                if webcam.x <= cx <= webcam.x2 and webcam.y <= cy <= webcam.y2:
-                    webcam_faces.append(face)
-            if webcam_faces:
-                face = max(webcam_faces, key=lambda box: box[2] * box[3])
-                center = (face[0] + face[2] / 2, face[1] + face[3] / 2)
-                if previous_webcam_center is not None:
-                    movement = (
-                        (center[0] - previous_webcam_center[0]) ** 2
-                        + (center[1] - previous_webcam_center[1]) ** 2
-                    ) ** 0.5
-                    if movement > max(face[2], face[3]) * 0.45:
-                        reaction_events.append({"time": round(time_position, 3), "type": "face_motion_spike"})
-                previous_webcam_center = center
-
-        gameplay_region = Rect(0, 0, width, height)
-
-        info("[SMARTCROP] Mode detected: GAMEPLAY_WEBCAM")
-        info(f"[SMARTCROP] Webcam candidate: {corner} confidence={confidence:.2f}")
-        info(f"[SMARTCROP] Webcam bbox: x={webcam.x} y={webcam.y} w={webcam.w} h={webcam.h}")
+        info(
+            "[LayoutPolicy] type=GAMEPLAY_WEBCAM_STACK | webcam_position=top | "
+            f"gameplay_position=bottom | webcam_ratio={layout['webcam_ratio']:.2f} | "
+            f"gameplay_ratio={layout['gameplay_ratio']:.2f} | split_y={layout['split_y']}"
+        )
+        info(
+            f"[SMARTCROP] Webcam bbox: x={webcam.x} y={webcam.y} w={webcam.w} h={webcam.h} | "
+            f"source_position={selected.corner}"
+        )
         info(
             "[SMARTCROP] Stable gameplay tracker: "
             f"samples={len(focus_points)} switches={tracking_summary.get('target_switches', 0)} "
@@ -390,14 +396,14 @@ def detect_content_layout(video_path: Path) -> SmartCropV2Plan:
         )
 
         return SmartCropV2Plan(
-            mode="GAMEPLAY_WEBCAM",
+            mode="GAMEPLAY_WEBCAM_STACK",
             input_width=width,
             input_height=height,
             duration=duration,
             legacy_plan=legacy,
-            confidence=confidence,
+            confidence=selected.final_score,
             webcam_region=webcam,
-            gameplay_region=gameplay_region,
+            gameplay_region=Rect(0, 0, width, height),
             gameplay_crop_width=crop_w,
             gameplay_crop_height=crop_h,
             gameplay_output_height=gameplay_output_height,
@@ -406,6 +412,15 @@ def detect_content_layout(video_path: Path) -> SmartCropV2Plan:
             reaction_events=reaction_events,
             tracking_debug=[item.debug for item in track],
             tracking_summary=tracking_summary,
+            webcam_detection_debug={
+                **selected.to_debug_dict(),
+                "selected": True,
+                "ambiguous": detection.ambiguous,
+                "reason": detection.reason,
+            },
+            webcam_candidates=candidates_debug,
+            layout_metadata=layout,
+            decision_reason="robust scored webcam detector + top webcam stack + stable gameplay tracking",
         )
     except Exception as exc:
         warning(f"[SMARTCROP] V2 analysis failed: {exc}; fallback la SmartCrop existent.")
@@ -415,6 +430,7 @@ def detect_content_layout(video_path: Path) -> SmartCropV2Plan:
             input_height=legacy.input_height,
             duration=legacy.duration,
             legacy_plan=legacy,
+            decision_reason=f"SmartCrop V2 analysis failed: {exc}",
         )
 
 
@@ -427,6 +443,21 @@ def _focus_xy(point: FocusPoint, plan: SmartCropV2Plan) -> tuple[float, float]:
     max_y = max(0, plan.input_height - plan.gameplay_crop_height)
     x = _clamp(point.center_x - plan.gameplay_crop_width / 2, 0, max_x)
     y = _clamp(point.center_y - plan.gameplay_crop_height / 2, 0, max_y)
+
+    # Avoid duplicating the original webcam overlay inside the gameplay panel
+    # when a small horizontal shift can remove it without breaking bounds.
+    webcam = plan.webcam_region
+    if webcam is not None and plan.mode in {"GAMEPLAY_WEBCAM", "GAMEPLAY_WEBCAM_STACK"}:
+        margin = max(0, int(SMARTCROP_WEBCAM_AVOIDANCE_MARGIN))
+        webcam_center_x = webcam.x + webcam.w / 2.0
+        if webcam_center_x < plan.input_width / 2.0:
+            safe_x = webcam.x2 + margin
+            if safe_x <= max_x:
+                x = max(x, safe_x)
+        else:
+            safe_x = webcam.x - plan.gameplay_crop_width - margin
+            if safe_x >= 0:
+                x = min(x, safe_x)
     return x, y
 
 
@@ -471,7 +502,7 @@ def write_gameplay_sendcmd(
 
 
 def validate_layout_plan(plan: SmartCropV2Plan) -> bool:
-    if plan.mode != "GAMEPLAY_WEBCAM":
+    if plan.mode not in {"GAMEPLAY_WEBCAM", "GAMEPLAY_WEBCAM_STACK"}:
         return True
     if plan.webcam_region is None:
         return False
@@ -479,6 +510,12 @@ def validate_layout_plan(plan: SmartCropV2Plan) -> bool:
         return False
     if plan.gameplay_output_height + plan.webcam_output_height != VIDEO_HEIGHT:
         return False
+    if plan.mode == "GAMEPLAY_WEBCAM_STACK":
+        layout = plan.layout_metadata or {}
+        if layout.get("webcam_position") != "top" or layout.get("gameplay_position") != "bottom":
+            return False
+        if int(layout.get("split_y", -1)) != plan.webcam_output_height:
+            return False
     return True
 
 
@@ -490,13 +527,16 @@ def save_smartcrop_debug(video_name: str, plan: SmartCropV2Plan) -> None:
     payload = {
         "mode": plan.mode,
         "confidence": plan.confidence,
+        "decision_reason": plan.decision_reason,
         "input": [plan.input_width, plan.input_height],
         "webcam": (
             [plan.webcam_region.x, plan.webcam_region.y, plan.webcam_region.w, plan.webcam_region.h]
             if plan.webcam_region else None
         ),
+        "webcam_detector": plan.webcam_detection_debug,
+        "candidate_webcam_regions": plan.webcam_candidates,
         "gameplay_crop": [plan.gameplay_crop_width, plan.gameplay_crop_height],
-        "layout": {
+        "layout": plan.layout_metadata or {
             "gameplay_height": plan.gameplay_output_height,
             "webcam_height": plan.webcam_output_height,
         },
@@ -513,4 +553,7 @@ def save_smartcrop_debug(video_name: str, plan: SmartCropV2Plan) -> None:
             for point in plan.focus_points
         ],
     }
-    (output_dir / "plan.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    (output_dir / "plan.json").write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
