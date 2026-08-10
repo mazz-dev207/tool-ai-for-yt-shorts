@@ -12,16 +12,17 @@ from src.config import (
     HOOK_DEBUG,
     HOOK_MIN_CONFIDENCE,
     HOOK_OPTIMIZER_ENABLED,
+    SMARTCUT_MINIMUM_SEGMENT_DURATION,
     TRANSCRIPT_DIR,
 )
 from src.highlights.gemini_judge import GeminiQuotaExhausted, probe_duration
 from src.hooks.analyzer import GeminiHookAnalyzer
 from src.hooks.candidates import generate_hook_start_candidates
+from src.hooks.local_refinement import refine_start_multimodally
 from src.hooks.models import HookOptimizationResult
 from src.hooks.scoring import (
     clamp_semantic_start,
     normalize_hook_candidate,
-    refine_start_locally,
     select_best_hook_candidate,
 )
 from src.logger import info, success, warning
@@ -127,7 +128,9 @@ def _apply_optimized_start(
                 key=lambda index: float(segments[index]["end"]),
             )
             first = segments[first_index]
-            if optimized_start >= float(first["end"]) - 0.35:
+            if optimized_start >= (
+                float(first["end"]) - SMARTCUT_MINIMUM_SEGMENT_DURATION
+            ):
                 return False, "optimized_start_would_destroy_first_segment"
             first["start"] = optimized_start
 
@@ -280,11 +283,12 @@ def optimize_hook_start(
         original_start,
         original_end,
     )
-    optimized_start = refine_start_locally(
-        semantic_start,
-        transcript,
-        original_start,
-        original_end,
+    optimized_start = refine_start_multimodally(
+        video_path=video_path,
+        semantic_start=semantic_start,
+        transcript=transcript,
+        original_start=original_start,
+        highlight_end=original_end,
     )
 
     result = HookOptimizationResult(
