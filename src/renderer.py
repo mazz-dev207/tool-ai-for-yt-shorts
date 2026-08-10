@@ -65,6 +65,20 @@ def _webcam_corner(plan) -> str:
     return f"{vertical}-{horizontal}"
 
 
+def _log_tracking_summary(plan) -> None:
+    summary = getattr(plan, "tracking_summary", {}) or {}
+    if not summary:
+        return
+    info(
+        "[SMARTCROP] Stable virtual cameraman | "
+        f"switches={summary.get('target_switches', 0)} | "
+        f"direction_changes={summary.get('direction_changes', 0)} | "
+        f"held={summary.get('held_samples', 0)} | "
+        f"recenter={summary.get('recenter_samples', 0)} | "
+        f"scene_cuts={summary.get('scene_cuts', 0)}"
+    )
+
+
 def _log_smartcrop_decision(plan) -> None:
     info(
         f"[SMARTCROP] Detected mode: {plan.mode} | "
@@ -87,27 +101,20 @@ def _log_smartcrop_decision(plan) -> None:
             f"gameplay={VIDEO_WIDTH}x{plan.gameplay_output_height} | "
             f"webcam={VIDEO_WIDTH}x{plan.webcam_output_height}"
         )
-        motion_samples = sum(
-            1 for point in plan.focus_points
-            if getattr(point, "source", "") == "motion"
-        )
         info(
             f"[SMARTCROP] Tracking: focus_samples={len(plan.focus_points)} | "
-            f"motion_samples={motion_samples} | "
             f"reaction_signals={len(plan.reaction_events)}"
         )
+        _log_tracking_summary(plan)
         return
 
     if plan.mode == "GAMEPLAY_ONLY":
-        motion_samples = sum(
-            1 for point in plan.focus_points
-            if getattr(point, "source", "") == "motion"
-        )
         info(
-            f"[SMARTCROP] Gameplay-only dynamic 9:16 crop | "
+            f"[SMARTCROP] Gameplay-only stable 9:16 crop | "
             f"crop={plan.gameplay_crop_width}x{plan.gameplay_crop_height} | "
-            f"focus_samples={len(plan.focus_points)} | motion_samples={motion_samples}"
+            f"focus_samples={len(plan.focus_points)}"
         )
+        _log_tracking_summary(plan)
         return
 
     if plan.mode == "PODCAST_MULTI_SPEAKER":
