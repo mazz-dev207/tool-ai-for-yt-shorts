@@ -4,6 +4,20 @@ from unittest.mock import patch
 from src.retention.analyzer import RetentionAnalyzer, parse_retention_json
 
 
+def _context(start: float, end: float, text: str) -> dict:
+    segment = {"start": start, "end": end, "text": text}
+    return {
+        "candidate_start": start,
+        "candidate_end": end,
+        "start": max(0.0, start - 5.0),
+        "end": end + 5.0,
+        "before": [],
+        "candidate": [segment],
+        "after": [],
+        "all": [segment],
+    }
+
+
 class RetentionJsonTests(unittest.TestCase):
     def test_parses_json_code_fence(self):
         result = parse_retention_json('```json\n{"content_type":"gaming"}\n```')
@@ -43,15 +57,7 @@ class RetentionJsonTests(unittest.TestCase):
 
         analyzer = RetentionAnalyzer(model="test-model")
         result = analyzer.analyze(
-            {
-                "candidate_start": 10.0,
-                "candidate_end": 30.0,
-                "start": 5.0,
-                "end": 35.0,
-                "segments": [
-                    {"start": 10.0, "end": 30.0, "text": "A compact vlog story happens here."}
-                ],
-            },
+            _context(10.0, 30.0, "A compact vlog story happens here."),
             {"word_rate": 2.0},
         )
 
@@ -77,15 +83,7 @@ class RetentionJsonTests(unittest.TestCase):
 
         analyzer = RetentionAnalyzer(model="test-model")
         result = analyzer.analyze(
-            {
-                "candidate_start": 1.0,
-                "candidate_end": 20.0,
-                "start": 0.0,
-                "end": 25.0,
-                "segments": [
-                    {"start": 1.0, "end": 20.0, "text": "A gameplay moment happens here."}
-                ],
-            },
+            _context(1.0, 20.0, "A gameplay moment happens here."),
             {"word_rate": 2.0},
         )
 
