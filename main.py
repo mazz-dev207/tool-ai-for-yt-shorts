@@ -1,5 +1,6 @@
 from pathlib import Path
 import argparse
+import os
 import shutil
 import sys
 import time
@@ -57,6 +58,16 @@ def parse_args():
         default=CONTENT_PROFILE,
         help="Profil folosit de Candidate Discovery, Gemini Judge și SmartCrop.",
     )
+    parser.add_argument(
+        "--smartcrop-mode",
+        choices=["auto", "gameplay-webcam", "gameplay-only"],
+        default="auto",
+        help=(
+            "Politica SmartCrop. gameplay-webcam înseamnă că sursa este cunoscută "
+            "ca gameplay + webcam: detectorul caută unde este webcam-ul și forțează "
+            "stack 35-40% webcam sus / 60-65% gameplay jos."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -64,6 +75,9 @@ def main():
     args = parse_args()
     video_name = args.video_name
     video_path = INPUT_DIR / f"{video_name}.mp4"
+
+    # Runtime-only policy consumed by SmartCrop profile routing during rendering.
+    os.environ["SMARTCROP_MODE_RUNTIME"] = args.smartcrop_mode
 
     if not video_path.exists():
         print(f"Fișierul nu există:\n{video_path}")
@@ -128,7 +142,10 @@ def main():
     if not clips:
         raise RuntimeError("Nu au fost generate clipuri.")
 
-    info(f"7/7 Randare {len(clips)} clipuri...")
+    info(
+        f"7/7 Randare {len(clips)} clipuri... "
+        f"SmartCrop mode={args.smartcrop_mode}"
+    )
     render_started = time.time()
     for clip in clips:
         render(clip.stem, args.content_profile)
