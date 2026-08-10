@@ -5,17 +5,9 @@ from pathlib import Path
 
 import cv2
 
-from src.config import (
-    SMARTCROP_MAX_CROP_VELOCITY,
-    SMARTCROP_MOVEMENT_DEAD_ZONE,
-    SMARTCROP_SAMPLE_INTERVAL,
-    VIDEO_HEIGHT,
-)
+from src.config import SMARTCROP_SAMPLE_INTERVAL, VIDEO_HEIGHT
+from src.gameplay_tracker import build_stable_gameplay_track
 from src.smart_crop_v2 import FocusPoint, Rect, SmartCropV2Plan, validate_crop_bounds
-
-
-def _clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(value, maximum))
 
 
 def _load_face_detector():
@@ -73,77 +65,36 @@ def _sample_video(video_path: Path):
     return width, height, duration, samples
 
 
-def _motion_center(previous_gray, current_gray):
-    diff = cv2.absdiff(previous_gray, current_gray)
-    diff = cv2.GaussianBlur(diff, (5, 5), 0)
-    _, mask = cv2.threshold(diff, 24, 255, cv2.THRESH_BINARY)
-    active = cv2.countNonZero(mask)
-    if active < mask.shape[0] * mask.shape[1] * 0.004:
-        return None
-    moments = cv2.moments(mask, binaryImage=True)
-    if moments["m00"] <= 0:
-        return None
-    return moments["m10"] / moments["m00"], moments["m01"] / moments["m00"]
-
-
-def _smooth_focus_points(
-    points: list[FocusPoint],
-    crop_width: int,
-    crop_height: int,
-    frame_width: int,
-    frame_height: int,
-) -> list[FocusPoint]:
-    if not points:
-        return []
-    result = [points[0]]
-    dead_x = crop_width * SMARTCROP_MOVEMENT_DEAD_ZONE
-    dead_y = crop_height * SMARTCROP_MOVEMENT_DEAD_ZONE
-    max_x = crop_width * SMARTCROP_MAX_CROP_VELOCITY
-    max_y = crop_height * SMARTCROP_MAX_CROP_VELOCITY
-    for point in points[1:]:
-        previous = result[-1]
-        dx = point.center_x - previous.center_x
-        dy = point.center_y - previous.center_y
-        if abs(dx) <= dead_x:
-            dx = 0.0
-        if abs(dy) <= dead_y:
-            dy = 0.0
-        dx = _clamp(dx, -max_x, max_x)
-        dy = _clamp(dy, -max_y, max_y)
-        center_x = previous.center_x + dx * 0.38
-        center_y = previous.center_y + dy * 0.38
-        center_x = _clamp(center_x, crop_width / 2, frame_width - crop_width / 2)
-        center_y = _clamp(center_y, crop_height / 2, frame_height - crop_height / 2)
-        result.append(FocusPoint(point.time, center_x, center_y, point.source))
-    return result
-
-
 def build_gameplay_only_plan(video_path: Path, plan: SmartCropV2Plan) -> SmartCropV2Plan:
     width, height, _duration, samples = _sample_video(video_path)
     crop_width = int(plan.legacy_plan.crop_width)
     crop_height = int(plan.legacy_plan.crop_height)
-    points: list[FocusPoint] = []
-    previous_gray = None
-    for time_position, frame, _faces in samples:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        motion = _motion_center(previous_gray, gray) if previous_gray is not None else None
-        if motion is None:
-            motion = (width / 2, height / 2)
-            source = "center"
-        else:
-            source = "motion"
-        points.append(FocusPoint(time_position, motion[0], motion[1], source))
-        previous_gray = gray
+
+    track, tracking_summary = build_stable_gameplay_track(
+        samples,
+        crop_width=crop_width,
+        crop_height=crop_height,
+        frame_width=width,
+        frame_height=height,
+        ignored_region=None,
+    )
+    points = [
+        FocusPoint(item.time, item.center_x, item.center_y, item.source)
+        for item in track
+    ]
     if not points:
-        points = [FocusPoint(0.0, width / 2, height / 2, "center")]
+        points = [FocusPoint(0.0, width / 2, height / 2, "neutral")]
+
     plan.mode = "GAMEPLAY_ONLY"
     plan.confidence = max(float(plan.confidence), 0.75)
     plan.gameplay_region = Rect(0, 0, width, height)
     plan.gameplay_crop_width = crop_width
     plan.gameplay_crop_height = crop_height
     plan.gameplay_output_height = VIDEO_HEIGHT
-    plan.focus_points = _smooth_focus_points(points, crop_width, crop_height, width, height)
-    plan.decision_reason = "gaming profile + landscape source without persistent webcam"
+    plan.focus_points = points
+    plan.tracking_debug = [item.debug for item in track]
+    plan.tracking_summary = tracking_summary
+    plan.decision_reason = "gaming profile + stable virtual cameraman target tracking"
     return plan
 
 
@@ -194,7 +145,7 @@ def upgrade_plan_for_profile(
     plan.content_profile = profile
     if profile == "gaming":
         if plan.mode == "GAMEPLAY_WEBCAM":
-            plan.decision_reason = "persistent webcam detected for gaming profile"
+            plan.decision_reason = "persistent webcam + stable gameplay target tracking"
             return plan
         if plan.input_width > plan.input_height:
             return build_gameplay_only_plan(video_path, plan)
