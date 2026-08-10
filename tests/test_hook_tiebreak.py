@@ -41,13 +41,14 @@ class HookTieBreakTests(unittest.TestCase):
         # A: base 70 + naturalness 5 = 75.
         a = normalize_hook_candidate(raw(19.5, dict(CORE_70), 5))
 
-        # B: base 77 + modifiers 0 = 77. Difference=2 <= tie threshold 3.
+        # B: immediate_action is capped at 20, so 14 + 7 becomes 20.
+        # Base becomes 76 + modifiers 0 = 76. Difference=1 <= tie threshold 3.
         b_core = dict(CORE_70)
         b_core["immediate_action"] += 7
         b = normalize_hook_candidate(raw(20.5, b_core, 0))
 
         self.assertEqual(a.final_hook_score, 75)
-        self.assertEqual(b.final_hook_score, 77)
+        self.assertEqual(b.final_hook_score, 76)
         best = select_best_hook_candidate([a, b], [], 20.0)
         self.assertIs(best, a)
 
