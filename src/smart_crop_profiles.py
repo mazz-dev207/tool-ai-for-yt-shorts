@@ -144,8 +144,10 @@ def upgrade_plan_for_profile(
     profile = str(content_profile or "auto").strip().lower()
     plan.content_profile = profile
     if profile == "gaming":
-        if plan.mode == "GAMEPLAY_WEBCAM":
-            plan.decision_reason = "persistent webcam + stable gameplay target tracking"
+        if plan.mode in {"GAMEPLAY_WEBCAM", "GAMEPLAY_WEBCAM_STACK"}:
+            plan.decision_reason = (
+                "robust webcam detection + top webcam stack + stable gameplay target tracking"
+            )
             return plan
         if plan.input_width > plan.input_height:
             return build_gameplay_only_plan(video_path, plan)
