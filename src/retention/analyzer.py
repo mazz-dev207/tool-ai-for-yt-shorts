@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 import ollama
 
 from src.config import OLLAMA_MODEL
-from src.logger import info
+from src.logger import info, warning
 from src.retention.context import format_context_for_llm
 
 
@@ -15,16 +16,112 @@ CONTENT_TYPES = (
     "documentary, educational, reaction, storytelling, general"
 )
 
-# Retention-ul trebuie să fie suficient de detaliat pentru editare, nu pentru
-# a produce metadata pe care pipeline-ul nu o folosește la tăiere.
 RETENTION_NUM_CTX = 4096
-RETENTION_NUM_PREDICT = 900
+RETENTION_NUM_PREDICT = 800
+RETENTION_RETRY_NUM_PREDICT = 600
 OLLAMA_KEEP_ALIVE = "30m"
+
+
+def parse_retention_json(content: str) -> dict:
+    text = str(content or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+
+    candidates = [text]
+    first = text.find("{")
+    last = text.rfind("}")
+    if first >= 0 and last > first:
+        candidates.append(text[first:last + 1])
+
+    last_error: Exception | None = None
+    decoder = json.JSONDecoder()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        attempts = [
+            candidate,
+            re.sub(r",\s*([}\]])", r"\1", candidate),
+        ]
+        for attempt in attempts:
+            try:
+                result = json.loads(attempt)
+                if isinstance(result, dict):
+                    return result
+            except json.JSONDecodeError as exc:
+                last_error = exc
+
+            try:
+                result, _end = decoder.raw_decode(attempt.lstrip())
+                if isinstance(result, dict):
+                    return result
+            except json.JSONDecodeError as exc:
+                last_error = exc
+
+    raise RuntimeError(f"Retention AI a returnat JSON invalid: {last_error}")
+
+
+def _with_optimizer_defaults(result: dict) -> dict:
+    if not isinstance(result, dict):
+        raise RuntimeError("Retention AI nu a returnat un obiect JSON.")
+
+    result.setdefault("hook_variants", [])
+    result.setdefault("variants", [])
+    result.setdefault("scores", {})
+    result.setdefault("retention_anchors", [])
+    result.setdefault("retention_risks", [])
+    result.setdefault("open_loops", [])
+    result.setdefault("pattern_interrupts", [])
+    return result
 
 
 class RetentionAnalyzer:
     def __init__(self, model: str = OLLAMA_MODEL):
         self.model = model
+
+    def _chat(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str,
+        num_predict: int,
+        temperature: float,
+        label: str,
+    ) -> tuple[str, int]:
+        started = time.time()
+        response = ollama.chat(
+            model=self.model,
+            stream=False,
+            think=False,
+            keep_alive=OLLAMA_KEEP_ALIVE,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            format="json",
+            options={
+                "temperature": temperature,
+                "num_ctx": RETENTION_NUM_CTX,
+                "num_predict": num_predict,
+            },
+        )
+
+        elapsed = time.time() - started
+        load_ms = float(response.get("load_duration", 0) or 0) / 1_000_000
+        prompt_tokens = int(response.get("prompt_eval_count", 0) or 0)
+        output_tokens = int(response.get("eval_count", 0) or 0)
+
+        info(
+            f"Retention AI {label} în {elapsed:.2f}s | "
+            f"load={load_ms:.0f}ms | in={prompt_tokens} tok | out={output_tokens} tok"
+        )
+        if output_tokens >= num_predict - 5:
+            warning(
+                f"[RETENTION] {label} a atins limita de output ({num_predict}); "
+                "răspunsul poate fi trunchiat."
+            )
+
+        return str(response["message"]["content"]), output_tokens
 
     def analyze(self, context: dict, pacing: dict, max_variants: int = 1) -> dict:
         transcript_text = format_context_for_llm(context, max_chars=8500)
@@ -41,11 +138,15 @@ RULES
 - Prefer HOOK -> MINIMAL CONTEXT -> ESCALATION -> PAYOFF when supported.
 - Keep the result understandable without the original video.
 - Target roughly 15-60 seconds, but quality matters more than duration.
-- Be concise. The complete JSON response should normally stay under 650 tokens.
+- Output must be COMPACT. Target under 450 tokens.
+- Use at most 4 edit segments.
+- Segment reason must be at most 4 words.
+- Do not repeat the top-level scores inside the edit variant.
+- Do not explain your reasoning outside JSON.
 
 CONTENT TYPE must be one of: {CONTENT_TYPES}.
 
-Return ONLY one valid JSON object with exactly these keys:
+Return ONLY this compact JSON structure:
 {{
   "content_type": "...",
   "scores": {{
@@ -60,11 +161,10 @@ Return ONLY one valid JSON object with exactly these keys:
   }},
   "hook_variants": [
     {{
-      "text": "short exact/source-supported hook description",
+      "text": "short source-supported hook",
       "type": "original",
       "generated": false,
       "score": 0,
-      "evidence": [],
       "source_start": 0.0,
       "source_end": 0.0
     }}
@@ -73,17 +173,6 @@ Return ONLY one valid JSON object with exactly these keys:
     {{
       "name": "best_edit",
       "strategy": "extractive",
-      "rationale": "one short sentence",
-      "scores": {{
-        "hook": 0,
-        "curiosity": 0,
-        "emotion": 0,
-        "conflict": 0,
-        "payoff": 0,
-        "information_density": 0,
-        "pacing": 0,
-        "standalone": 0
-      }},
       "segments": [
         {{"start": 0.0, "end": 0.0, "role": "hook", "reason": "short reason"}}
       ]
@@ -92,8 +181,8 @@ Return ONLY one valid JSON object with exactly these keys:
 }}
 
 Return at most ONE hook and ONE edit variant.
-Use no more than 6 segments in the edit.
-Do not add summaries, anchors, risks, open loops, visual suggestions, explanations, markdown or extra keys.
+Do not add rationale, duplicate scores, evidence, summaries, anchors, risks, open loops,
+visual suggestions, markdown, comments, or extra keys.
 
 Candidate: {context['candidate_start']:.2f}s -> {context['candidate_end']:.2f}s
 Available context: {context['start']:.2f}s -> {context['end']:.2f}s
@@ -105,56 +194,61 @@ TIMESTAMPED TRANSCRIPT:
 {transcript_text}
 """.strip()
 
-        started = time.time()
-        response = ollama.chat(
-            model=self.model,
-            stream=False,
-            think=False,
-            keep_alive=OLLAMA_KEEP_ALIVE,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Return only compact valid JSON matching the requested structure. "
-                        "Ground every timestamp and factual claim in the transcript."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            format="json",
-            options={
-                "temperature": 0.08,
-                "num_ctx": RETENTION_NUM_CTX,
-                "num_predict": RETENTION_NUM_PREDICT,
-            },
+        content, output_tokens = self._chat(
+            prompt=prompt,
+            system_prompt=(
+                "Return only one compact valid JSON object. Stay under 450 tokens. "
+                "Use at most four extractive segments and ground every timestamp in the transcript."
+            ),
+            num_predict=RETENTION_NUM_PREDICT,
+            temperature=0.05,
+            label="răspuns",
         )
 
-        elapsed = time.time() - started
-        load_ms = float(response.get("load_duration", 0) or 0) / 1_000_000
-        prompt_tokens = int(response.get("prompt_eval_count", 0) or 0)
-        output_tokens = int(response.get("eval_count", 0) or 0)
-
-        info(
-            f"Retention AI răspuns în {elapsed:.2f}s | "
-            f"load={load_ms:.0f}ms | in={prompt_tokens} tok | out={output_tokens} tok"
-        )
-
-        content = response["message"]["content"].strip()
         try:
-            result = json.loads(content)
-        except json.JSONDecodeError as exc:
+            return _with_optimizer_defaults(parse_retention_json(content))
+        except RuntimeError as first_error:
+            warning(
+                f"[RETENTION] Primul JSON este invalid/trunchiat: {first_error}. "
+                "Execut un singur retry compact."
+            )
+
+        retry_prompt = f"""
+The previous response was invalid or truncated.
+Return ONLY a complete ultra-compact JSON object. Maximum 300 tokens.
+No prose. No rationale. No evidence. No duplicate scores. At most 4 segments.
+If no original hook can be represented safely, use "hook_variants": [].
+
+Required shape:
+{{
+  "content_type":"general",
+  "scores":{{"hook":0,"curiosity":0,"emotion":0,"conflict":0,"payoff":0,"information_density":0,"pacing":0,"standalone":0}},
+  "hook_variants":[],
+  "variants":[{{"name":"best_edit","strategy":"extractive","segments":[{{"start":0.0,"end":0.0,"role":"hook"}}]}}]
+}}
+
+Candidate: {context['candidate_start']:.2f}s -> {context['candidate_end']:.2f}s
+Available context: {context['start']:.2f}s -> {context['end']:.2f}s
+TIMESTAMPED TRANSCRIPT:
+{transcript_text}
+""".strip()
+
+        retry_content, _retry_tokens = self._chat(
+            prompt=retry_prompt,
+            system_prompt=(
+                "This is a JSON repair retry. Return one COMPLETE compact JSON object only, "
+                "under 300 tokens. Never continue after the closing brace."
+            ),
+            num_predict=RETENTION_RETRY_NUM_PREDICT,
+            temperature=0.0,
+            label="retry",
+        )
+
+        try:
+            result = parse_retention_json(retry_content)
+        except RuntimeError as retry_error:
             raise RuntimeError(
-                f"Retention AI a returnat JSON invalid: {exc}"
-            ) from exc
+                f"Retention AI JSON invalid și după retry compact: {retry_error}"
+            ) from retry_error
 
-        if not isinstance(result, dict):
-            raise RuntimeError("Retention AI nu a returnat un obiect JSON.")
-
-        # Câmpurile următoare sunt opționale pentru optimizer. Le păstrăm
-        # compatibile fără să cerem modelului să consume tokeni pentru ele.
-        result.setdefault("retention_anchors", [])
-        result.setdefault("retention_risks", [])
-        result.setdefault("open_loops", [])
-        result.setdefault("pattern_interrupts", [])
-
-        return result
+        return _with_optimizer_defaults(result)
