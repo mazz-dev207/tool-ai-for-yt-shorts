@@ -36,10 +36,12 @@ def raw(start, core, naturalness):
 
 class HookTieBreakTests(unittest.TestCase):
     def test_close_final_scores_prefer_naturalness(self):
+        # Both candidates are equally distant from original_start=20.0, so the
+        # tie is not decided by shift distance.
         # A: base 70 + naturalness 5 = 75.
-        a = normalize_hook_candidate(raw(20.0, dict(CORE_70), 5))
+        a = normalize_hook_candidate(raw(19.5, dict(CORE_70), 5))
 
-        # B: base 77 + modifiers 0 = 77. Scores differ by 2, so tie policy applies.
+        # B: base 77 + modifiers 0 = 77. Difference=2 <= tie threshold 3.
         b_core = dict(CORE_70)
         b_core["immediate_action"] += 7
         b = normalize_hook_candidate(raw(20.5, b_core, 0))
