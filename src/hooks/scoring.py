@@ -134,7 +134,10 @@ def select_best_hook_candidate(
     if not candidates:
         return None
     for candidate in candidates:
-        candidate.continuity_score = continuity_score(candidate.start, transcript, original_start)
+        visual_signal = max(0.0, float(candidate.continuity_score or 0.0))
+        candidate.continuity_score = (
+            continuity_score(candidate.start, transcript, original_start) + visual_signal
+        )
     best_score = max(candidate.hook_score for candidate in candidates)
     close = [
         candidate for candidate in candidates
