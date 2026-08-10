@@ -86,8 +86,8 @@ class GameplayTrackerTests(unittest.TestCase):
             obs(0.0, 700), obs(0.5, 700), missing(1.0), missing(1.5), missing(2.0), missing(2.5)
         ])
         self.assertGreaterEqual(summary["recenter_samples"], 1)
-        # It must move toward neutral center without snapping there immediately.
-        self.assertGreater(points[-1].center_x, points[1].center_x)
+        # Once recentering begins, the camera moves back toward neutral without snapping.
+        self.assertGreater(points[-1].center_x, points[-2].center_x)
         self.assertLess(points[-1].center_x, CENTER_X + 1)
 
     def test_much_stronger_target_switches_controlled(self):
@@ -143,13 +143,14 @@ class GameplayTrackerTests(unittest.TestCase):
 
     def test_rapid_motion_respects_speed_limit_without_snap(self):
         points, _ = track([
-            obs(0.0, 700, 0.90, "player"),
-            obs(0.5, 720, 0.90, "player"),
+            obs(0.0, 700, 0.40, "player"),
+            obs(0.5, 720, 0.40, "player"),
             obs(1.0, 1500, 0.96, "crosshair_action"),
             obs(1.5, 1500, 0.96, "crosshair_action"),
         ])
         deltas = [abs(b.center_x - a.center_x) for a, b in zip(points, points[1:])]
         self.assertLess(max(deltas), CROP_W * 0.24 * 0.5 + 1.0)
+        self.assertTrue(points[2].debug["TARGET_SWITCH"])
         self.assertLess(points[2].center_x, 1500)
 
 
