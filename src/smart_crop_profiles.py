@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import os
 import statistics
 from pathlib import Path
 
 import cv2
 
 from src.config import SMARTCROP_SAMPLE_INTERVAL, VIDEO_HEIGHT
+from src.forced_webcam_mode import (
+    build_forced_gameplay_webcam_plan,
+    enhance_plan_with_reading_focus,
+)
 from src.gameplay_tracker import build_stable_gameplay_track
 from src.smart_crop_v2 import FocusPoint, Rect, SmartCropV2Plan, validate_crop_bounds
 
@@ -136,6 +141,13 @@ def _podcast_regions(samples, width: int, height: int) -> tuple[list[Rect], floa
     return [left, right], confidence
 
 
+def _runtime_smartcrop_mode() -> str:
+    value = os.getenv("SMARTCROP_MODE_RUNTIME", "auto").strip().lower()
+    if value not in {"auto", "gameplay-webcam", "gameplay-only"}:
+        return "auto"
+    return value
+
+
 def upgrade_plan_for_profile(
     video_path: Path,
     plan: SmartCropV2Plan,
@@ -143,16 +155,33 @@ def upgrade_plan_for_profile(
 ) -> SmartCropV2Plan:
     profile = str(content_profile or "auto").strip().lower()
     plan.content_profile = profile
+    runtime_mode = _runtime_smartcrop_mode()
+
+    # Explicit CLI policy has priority over generic auto-detection.
+    if runtime_mode == "gameplay-webcam":
+        plan = build_forced_gameplay_webcam_plan(video_path, plan)
+        return enhance_plan_with_reading_focus(video_path, plan)
+
+    if runtime_mode == "gameplay-only":
+        if plan.input_width > plan.input_height:
+            plan = build_gameplay_only_plan(video_path, plan)
+            plan.decision_reason = "forced gameplay-only mode + stable virtual cameraman"
+            return enhance_plan_with_reading_focus(video_path, plan)
+        plan.decision_reason = "forced gameplay-only requested but source is not landscape"
+        return plan
+
     if profile == "gaming":
         if plan.mode in {"GAMEPLAY_WEBCAM", "GAMEPLAY_WEBCAM_STACK"}:
             plan.decision_reason = (
                 "robust webcam detection + top webcam stack + stable gameplay target tracking"
             )
-            return plan
+            return enhance_plan_with_reading_focus(video_path, plan)
         if plan.input_width > plan.input_height:
-            return build_gameplay_only_plan(video_path, plan)
+            plan = build_gameplay_only_plan(video_path, plan)
+            return enhance_plan_with_reading_focus(video_path, plan)
         plan.decision_reason = "gaming profile but source is not landscape"
         return plan
+
     if profile == "podcast":
         width, height, _duration, samples = _sample_video(video_path)
         regions, confidence = _podcast_regions(samples, width, height)
@@ -173,6 +202,7 @@ def upgrade_plan_for_profile(
         plan.speaker_regions = []
         plan.decision_reason = "podcast profile but no stable speaker layout"
         return plan
+
     if profile in {"entertainment", "reaction", "general", "auto"} and plan.mode == "GENERAL":
         try:
             _width, _height, _duration, samples = _sample_video(video_path)
