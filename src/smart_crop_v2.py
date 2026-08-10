@@ -24,6 +24,7 @@ from src.config import (
     VIDEO_HEIGHT,
     VIDEO_WIDTH,
 )
+from src.gameplay_tracker import build_stable_gameplay_track
 from src.logger import info, warning
 from src.smart_crop import CropPlan, analyze_smart_crop
 
@@ -68,6 +69,8 @@ class SmartCropV2Plan:
     webcam_output_height: int = 0
     focus_points: list[FocusPoint] = field(default_factory=list)
     reaction_events: list[dict] = field(default_factory=list)
+    tracking_debug: list[dict] = field(default_factory=list)
+    tracking_summary: dict = field(default_factory=dict)
 
 
 def _even(value: float) -> int:
@@ -254,6 +257,10 @@ def smooth_focus_points(
     frame_width: int,
     frame_height: int,
 ) -> list[FocusPoint]:
+    """Legacy-compatible smoother kept for tests/fallback callers.
+
+    New gameplay paths use gameplay_tracker.build_stable_gameplay_track instead.
+    """
     if not points:
         return []
     result = [points[0]]
@@ -336,21 +343,22 @@ def detect_content_layout(video_path: Path) -> SmartCropV2Plan:
         gameplay_target_ratio = VIDEO_WIDTH / float(gameplay_output_height)
         crop_w, crop_h = _calculate_crop_size_for_aspect(width, height, gameplay_target_ratio)
 
-        focus_points: list[FocusPoint] = []
-        previous_gray = None
+        track, tracking_summary = build_stable_gameplay_track(
+            samples,
+            crop_width=crop_w,
+            crop_height=crop_h,
+            frame_width=width,
+            frame_height=height,
+            ignored_region=webcam,
+        )
+        focus_points = [
+            FocusPoint(item.time, item.center_x, item.center_y, item.source)
+            for item in track
+        ]
+
         previous_webcam_center = None
         reaction_events: list[dict] = []
-
-        for time_position, frame, faces in samples:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            motion = _motion_center(previous_gray, gray, webcam) if previous_gray is not None else None
-            if motion is None:
-                motion = (width / 2, height / 2)
-                source = "center"
-            else:
-                source = "motion"
-            focus_points.append(FocusPoint(time_position, motion[0], motion[1], source))
-
+        for time_position, _frame, faces in samples:
             webcam_faces = []
             for face in faces:
                 x, y, w, h = face
@@ -362,18 +370,24 @@ def detect_content_layout(video_path: Path) -> SmartCropV2Plan:
                 face = max(webcam_faces, key=lambda box: box[2] * box[3])
                 center = (face[0] + face[2] / 2, face[1] + face[3] / 2)
                 if previous_webcam_center is not None:
-                    movement = ((center[0] - previous_webcam_center[0]) ** 2 + (center[1] - previous_webcam_center[1]) ** 2) ** 0.5
+                    movement = (
+                        (center[0] - previous_webcam_center[0]) ** 2
+                        + (center[1] - previous_webcam_center[1]) ** 2
+                    ) ** 0.5
                     if movement > max(face[2], face[3]) * 0.45:
                         reaction_events.append({"time": round(time_position, 3), "type": "face_motion_spike"})
                 previous_webcam_center = center
-            previous_gray = gray
 
-        focus_points = smooth_focus_points(focus_points, crop_w, crop_h, width, height)
         gameplay_region = Rect(0, 0, width, height)
 
-        info(f"[SMARTCROP] Mode detected: GAMEPLAY_WEBCAM")
+        info("[SMARTCROP] Mode detected: GAMEPLAY_WEBCAM")
         info(f"[SMARTCROP] Webcam candidate: {corner} confidence={confidence:.2f}")
         info(f"[SMARTCROP] Webcam bbox: x={webcam.x} y={webcam.y} w={webcam.w} h={webcam.h}")
+        info(
+            "[SMARTCROP] Stable gameplay tracker: "
+            f"samples={len(focus_points)} switches={tracking_summary.get('target_switches', 0)} "
+            f"direction_changes={tracking_summary.get('direction_changes', 0)}"
+        )
 
         return SmartCropV2Plan(
             mode="GAMEPLAY_WEBCAM",
@@ -390,6 +404,8 @@ def detect_content_layout(video_path: Path) -> SmartCropV2Plan:
             webcam_output_height=webcam_output_height,
             focus_points=focus_points,
             reaction_events=reaction_events,
+            tracking_debug=[item.debug for item in track],
+            tracking_summary=tracking_summary,
         )
     except Exception as exc:
         warning(f"[SMARTCROP] V2 analysis failed: {exc}; fallback la SmartCrop existent.")
@@ -485,5 +501,16 @@ def save_smartcrop_debug(video_name: str, plan: SmartCropV2Plan) -> None:
             "webcam_height": plan.webcam_output_height,
         },
         "reaction_events": plan.reaction_events,
+        "tracking_summary": plan.tracking_summary,
+        "tracking_samples": plan.tracking_debug,
+        "focus_points": [
+            {
+                "time": round(point.time, 3),
+                "center_x": round(point.center_x, 2),
+                "center_y": round(point.center_y, 2),
+                "source": point.source,
+            }
+            for point in plan.focus_points
+        ],
     }
     (output_dir / "plan.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
