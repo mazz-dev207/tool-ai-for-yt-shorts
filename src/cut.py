@@ -11,8 +11,9 @@ from src.config import (
     SMARTCUT_MINIMUM_SEGMENT_DURATION,
     SMARTCUT_REACTION_SEARCH_WINDOW,
 )
+from src.hooks.smartcut_bridge import refine_edit_plan_preserving_hook
 from src.logger import info, success, warning
-from src.smart_cut import probe_video_duration, refine_edit_plan
+from src.smart_cut import probe_video_duration
 
 
 def _run(command):
@@ -197,12 +198,21 @@ def _refine_clips(video_name: str, video: Path, clips: list[dict]) -> list[dict]
         if had_extract_segments:
             original_segments = repair_micro_segments_for_smartcut(original_segments)
 
-        refined = refine_edit_plan(
+        hook_metadata = clip.get("hook_optimizer") or {}
+        protected_start = None
+        if bool(hook_metadata.get("applied", False)):
+            try:
+                protected_start = float(clip.get("optimized_start"))
+            except (TypeError, ValueError):
+                protected_start = None
+
+        refined = refine_edit_plan_preserving_hook(
             video_name=video_name,
             clip_index=index,
             original_segments=original_segments,
             transcript=transcript,
             video_duration=video_duration,
+            optimized_start=protected_start,
         )
         if not refined:
             continue
