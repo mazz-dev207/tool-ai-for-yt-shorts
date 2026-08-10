@@ -14,6 +14,7 @@ from src.config import (
     FINAL_DIR,
     TEMP_DIR,
     RETENTION_ENABLED,
+    HOOK_OPTIMIZER_ENABLED,
     HIGHLIGHT_MODE,
     CONTENT_PROFILE,
 )
@@ -23,6 +24,7 @@ from src.chunk_transcript import chunk_transcript
 from src.highlights.candidate_generator import generate_candidates
 from src.highlights.gemini_pipeline import run_gemini_highlight_stage
 from src.retention.optimizer import optimize_retention
+from src.hooks.optimizer import optimize_hooks
 from src.cut import cut
 from src.caption_engine import CaptionEngine
 from src.renderer import render
@@ -56,7 +58,7 @@ def parse_args():
         "--content-profile",
         choices=["auto", "gaming", "entertainment", "podcast", "reaction", "general"],
         default=CONTENT_PROFILE,
-        help="Profil folosit de Candidate Discovery, Gemini Judge și SmartCrop.",
+        help="Profil folosit de Candidate Discovery, Gemini Judge, Hook Optimizer și SmartCrop.",
     )
     parser.add_argument(
         "--smartcrop-mode",
@@ -99,13 +101,13 @@ def main():
         clean_folder(folder)
     timings["cleanup"] = time.time() - clean_started
 
-    info("1/7 Transcriere...")
+    info("1/8 Transcriere...")
     _, timings["transcription"] = timed_step(transcribe, video_path)
 
-    info("2/7 Creare ferestre analiză...")
+    info("2/8 Creare ferestre analiză...")
     _, timings["chunking"] = timed_step(chunk_transcript, video_name)
 
-    info("3/7 Candidate discovery...")
+    info("3/8 Candidate discovery...")
     _, timings["candidate_discovery"] = timed_step(
         generate_candidates,
         video_name,
@@ -121,16 +123,28 @@ def main():
     )
 
     if RETENTION_ENABLED:
-        info("4/7 Optimizare pentru retenție...")
+        info("4/8 Optimizare pentru retenție...")
         _, timings["retention"] = timed_step(optimize_retention, video_name)
     else:
-        info("4/7 Retention engine dezactivat.")
+        info("4/8 Retention engine dezactivat.")
         timings["retention"] = 0.0
 
-    info("5/7 Tăiere / asamblare clipuri...")
+    if HOOK_OPTIMIZER_ENABLED:
+        info("5/8 Hook START Optimizer...")
+        _, timings["hook_optimizer"] = timed_step(
+            optimize_hooks,
+            video_name,
+            video_path,
+            args.content_profile,
+        )
+    else:
+        info("5/8 Hook START Optimizer dezactivat; păstrez START-urile existente.")
+        timings["hook_optimizer"] = 0.0
+
+    info("6/8 Tăiere / asamblare clipuri...")
     _, timings["cut"] = timed_step(cut, video_name)
 
-    info("6/7 Generare subtitrări...")
+    info("7/8 Generare subtitrări...")
     caption_engine = CaptionEngine()
     _, timings["captions"] = timed_step(caption_engine.generate, video_name)
 
@@ -143,7 +157,7 @@ def main():
         raise RuntimeError("Nu au fost generate clipuri.")
 
     info(
-        f"7/7 Randare {len(clips)} clipuri... "
+        f"8/8 Randare {len(clips)} clipuri... "
         f"SmartCrop mode={args.smartcrop_mode}"
     )
     render_started = time.time()
@@ -167,6 +181,7 @@ def main():
         "candidate_discovery",
         "gemini_judge",
         "retention",
+        "hook_optimizer",
         "cut",
         "captions",
         "render",
