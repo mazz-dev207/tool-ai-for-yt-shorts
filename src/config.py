@@ -120,6 +120,28 @@ GEMINI_PROMPT_VERSION = "gemini-highlight-v1"
 GEMINI_CACHE_DIR = BASE_DIR / "cache" / "gemini_highlights"
 
 # --------------------------------------------------
+# Hook Start Optimizer
+# --------------------------------------------------
+HOOK_OPTIMIZER_ENABLED = _env_bool("HOOK_OPTIMIZER_ENABLED", True)
+HOOK_DEBUG = _env_bool("HOOK_DEBUG", True)
+HOOK_SEARCH_BEFORE = _env_float("HOOK_SEARCH_BEFORE", 1.5)
+HOOK_SEARCH_AFTER = _env_float("HOOK_SEARCH_AFTER", 3.0)
+HOOK_SEARCH_STEP = _env_float("HOOK_SEARCH_STEP", 0.5)
+HOOK_MAX_SHIFT_BEFORE = _env_float("HOOK_MAX_SHIFT_BEFORE", 1.5)
+HOOK_MAX_SHIFT_AFTER = _env_float("HOOK_MAX_SHIFT_AFTER", 3.0)
+HOOK_SCORE_TIE_THRESHOLD = _env_int("HOOK_SCORE_TIE_THRESHOLD", 3)
+HOOK_MIN_CONFIDENCE = _env_float("HOOK_MIN_CONFIDENCE", 0.55)
+HOOK_MICRO_PREROLL_MIN = _env_float("HOOK_MICRO_PREROLL_MIN", 0.10)
+HOOK_MICRO_PREROLL_MAX = _env_float("HOOK_MICRO_PREROLL_MAX", 0.35)
+HOOK_MAX_POSITIVE_MODIFIER = _env_int("HOOK_MAX_POSITIVE_MODIFIER", 15)
+HOOK_NATURALNESS_ENABLED = _env_bool("HOOK_NATURALNESS_ENABLED", True)
+HOOK_FORCED_INTRO_PENALTY_ENABLED = _env_bool(
+    "HOOK_FORCED_INTRO_PENALTY_ENABLED", True
+)
+HOOK_OPTIMIZER_VERSION = "hook-start-v2-naturalness"
+HOOK_CACHE_DIR = BASE_DIR / "cache" / "hook_optimizer"
+
+# --------------------------------------------------
 # SmartCut 2.0
 # --------------------------------------------------
 SMARTCUT_ENABLED = _env_bool("SMARTCUT_ENABLED", True)
