@@ -194,6 +194,9 @@ def _cache_key(video_path: Path, candidate: dict, profile: ContentProfile) -> st
         "model": GEMINI_MODEL,
         "profile": profile.name,
         "prompt_version": GEMINI_PROMPT_VERSION,
+        "format_id": candidate.get("format_id"),
+        "format_version": candidate.get("format_version"),
+        "strategy_context": candidate.get("strategy_context"),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -232,6 +235,12 @@ def build_prompt(
     context_start: float,
     context_end: float,
 ) -> str:
+    strategy_context = candidate.get("strategy_context") or {}
+    strategy_block = (
+        json.dumps(strategy_context, ensure_ascii=False, separators=(",", ":"))
+        if strategy_context
+        else "none"
+    )
     return f"""
 You are an expert short-form video editor and viral content analyst.
 Judge ONE pre-generated highlight candidate using BOTH the supplied video/audio and transcript.
@@ -245,6 +254,20 @@ A high-scoring clip should usually contain a hook, a development, and a payoff o
 CONTENT PROFILE: {profile.name}
 PROFILE PRIORITIES: {profile.description}
 PROFILE WEIGHTS (total 100): {json.dumps(profile.weights, separators=(',', ':'))}
+
+FORMAT / CHANNEL STRATEGY CONTEXT:
+{strategy_block}
+
+If strategy context is present, explicitly consider:
+- Which configured repeatable format this moment is intended to fit.
+- Whether the required signals are actually visible/audible in the supplied media.
+- Whether the payoff justifies the setup.
+- Whether the moment can become self-contained after reasonable editorial transformation.
+- Whether the moment is genuinely suitable for the channel, rather than merely interesting in isolation.
+Do NOT invent missing stakes, events or demand signals.
+Do NOT copy a reference creator's content; strategy describes repeatable mechanics only.
+Format Fit / Content Opportunity remain separate strategic signals; do not mechanically add them to the Highlight Score.
+Use them as evidence when deciding recommended=true/false and when explaining the reason.
 
 STANDARD COMPONENT LIMITS:
 - hook: 0-25
@@ -266,7 +289,7 @@ BOUNDARY RULES:
 - Duration is content-driven, not fixed.
 
 CANDIDATE ID: {candidate_id}
-LEGACY METADATA:
+LEGACY + STRATEGY METADATA:
 {json.dumps(candidate, ensure_ascii=False, separators=(',', ':'))}
 
 TIMESTAMPED TRANSCRIPT:
