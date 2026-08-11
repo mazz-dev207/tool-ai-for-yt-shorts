@@ -7,6 +7,7 @@ _ALLOWED_PURPOSES = {
     "cold_open", "hook", "context", "setup", "escalation", "payoff",
     "reaction", "aftermath", "callback", "replay",
 }
+_PREVIEW_PURPOSES = {"cold_open", "replay", "callback"}
 
 
 def _fallback_segments(clip: dict) -> list[TimelineSegment]:
@@ -28,6 +29,14 @@ def _fallback_segments(clip: dict) -> list[TimelineSegment]:
             )
         )
     return result
+
+
+def _overlap_seconds(first: TimelineSegment, second: TimelineSegment) -> float:
+    return max(
+        0.0,
+        min(first.source_end, second.source_end)
+        - max(first.source_start, second.source_start),
+    )
 
 
 def restructure_story(
@@ -79,9 +88,22 @@ def restructure_story(
     seen = {}
     for seg in segments:
         key = (round(seg.source_start, 2), round(seg.source_end, 2))
-        if key in seen and seg.purpose not in {"cold_open", "replay", "callback"}:
+        if key in seen and seg.purpose not in _PREVIEW_PURPOSES:
             return fallback, {"reordered": False, "fallback": "duplicate_content"}
         seen[key] = seg.purpose
+
+    # Normal semantic units cannot consume the same source material twice. A
+    # deliberate cold-open preview, replay or callback is the only exception.
+    for index, first in enumerate(segments):
+        for second in segments[index + 1:]:
+            if _overlap_seconds(first, second) <= 0.02:
+                continue
+            if first.purpose in _PREVIEW_PURPOSES or second.purpose in _PREVIEW_PURPOSES:
+                continue
+            return fallback, {
+                "reordered": False,
+                "fallback": "overlapping_source_segments",
+            }
 
     if sum(seg.duration for seg in segments) < 4.0:
         return fallback, {"reordered": False, "fallback": "timeline_too_short"}
