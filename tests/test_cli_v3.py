@@ -9,6 +9,7 @@ from main import (
     _cleanup_targets,
     _prepare_v3_resume_checkpoint,
     _save_pre_v3_checkpoint,
+    _should_keep_existing_downstream,
     _validate_resume_prerequisites,
     parse_args,
 )
@@ -89,7 +90,7 @@ class V3CliTests(unittest.TestCase):
                 (highlights_dir / "video1.json").write_text("[]", encoding="utf-8")
                 _validate_resume_prerequisites("video1", "v3")
 
-    def test_resume_cleanup_preserves_upstream_artifacts(self):
+    def test_resume_initial_cleanup_preserves_existing_media(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             transcript_dir = root / "transcript"
@@ -112,10 +113,11 @@ class V3CliTests(unittest.TestCase):
             self.assertNotIn(transcript_dir, targets)
             self.assertNotIn(highlights_dir, targets)
             self.assertNotIn(temp_dir, targets)
-            self.assertIn(output_dir, targets)
-            self.assertIn(subtitles_dir, targets)
-            self.assertIn(final_dir, targets)
+            self.assertNotIn(output_dir, targets)
+            self.assertNotIn(subtitles_dir, targets)
+            self.assertNotIn(final_dir, targets)
             self.assertIn(highlights_dir / "v3" / "video1", targets)
+            self.assertIn(output_dir / "debug" / "video1", targets)
 
     def test_save_pre_v3_checkpoint_copies_working_highlights(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -161,6 +163,25 @@ class V3CliTests(unittest.TestCase):
 
             self.assertTrue(checkpoint.exists())
             self.assertEqual(checkpoint.read_text(encoding="utf-8"), working.read_text(encoding="utf-8"))
+
+    def test_resume_keeps_existing_finals_when_v3_has_no_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            final_dir = Path(tmp) / "final"
+            final_dir.mkdir()
+            (final_dir / "clip_1_final.mp4").write_bytes(b"existing")
+
+            with patch("main.FINAL_DIR", final_dir):
+                self.assertTrue(_should_keep_existing_downstream("v3", False))
+                self.assertFalse(_should_keep_existing_downstream("v3", True))
+                self.assertFalse(_should_keep_existing_downstream(None, False))
+
+    def test_resume_rebuilds_when_no_existing_final_is_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            final_dir = Path(tmp) / "final"
+            final_dir.mkdir()
+
+            with patch("main.FINAL_DIR", final_dir):
+                self.assertFalse(_should_keep_existing_downstream("v3", False))
 
 
 if __name__ == "__main__":
