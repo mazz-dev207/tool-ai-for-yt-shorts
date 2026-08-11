@@ -11,6 +11,7 @@ from src.strategy.library import (
     load_channel_strategy,
     load_format_brief,
     load_format_library,
+    resolve_format_library_path,
     resolve_strategy_path,
 )
 from src.strategy.models import (
@@ -324,11 +325,16 @@ def apply_format_intelligence(
         except Exception as exc:
             warning(f"[FORMAT] FormatBrief invalid: {exc}; continuing without imported demand/reference data.")
 
-    formats = load_format_library()
-    if strategy.primary_niche not in {"gaming", "auto", "general"}:
-        matching_niche = [item for item in formats if item.niche == strategy.primary_niche]
-        if matching_niche:
-            formats = matching_niche
+    library_path = resolve_format_library_path(strategy.primary_niche)
+    if library_path is None:
+        warning(
+            f"[FORMAT] Nu există bibliotecă dedicată pentru niche={strategy.primary_niche}; "
+            "folosesc biblioteca implicită."
+        )
+    formats = load_format_library(library_path)
+    matching_niche = [item for item in formats if item.niche == strategy.primary_niche]
+    if matching_niche:
+        formats = matching_niche
 
     annotated: list[dict] = []
     skipped: list[dict] = []
