@@ -1,0 +1,23 @@
+{
+  "channel_name": "MazClips Gaming",
+  "primary_niche": "gaming",
+  "positioning": "Fast, self-contained gaming moments with clear stakes, authentic reactions and a strong payoff.",
+  "priority_subniches": [
+    "streamer_moments",
+    "competitive_gameplay",
+    "gaming_reactions"
+  ],
+  "priority_formats": [
+    "gaming_high_stakes_fail_reaction",
+    "gaming_clutch_comeback",
+    "gaming_visual_surprise"
+  ],
+  "avoid": [
+    "generic gameplay with no payoff",
+    "context-heavy clips",
+    "random moments selected only because the creator is famous"
+  ],
+  "min_format_fit": 45,
+  "min_content_opportunity": 50,
+  "version": 1
+}
