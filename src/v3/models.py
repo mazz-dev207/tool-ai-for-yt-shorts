@@ -13,10 +13,19 @@ ALLOWED_VISUAL_EFFECTS = {
     "caption_emphasis", "replay", "hard_cut", "none",
 }
 ALLOWED_AUDIO_EFFECTS = {"impact", "accent", "whoosh", "duck", "none"}
+PREVIEW_PURPOSES = {"cold_open", "replay", "callback"}
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, float(value)))
+
+
+def _source_ranges_overlap(first: "TimelineSegment", second: "TimelineSegment") -> bool:
+    overlap = min(first.source_end, second.source_end) - max(
+        first.source_start,
+        second.source_start,
+    )
+    return overlap > 0.02
 
 
 @dataclass
@@ -221,9 +230,19 @@ class EditPlan:
         for item in self.timeline:
             problems.extend(item.validate(source_duration))
             key = (int(round(item.source_start * 1000)), int(round(item.source_end * 1000)))
-            if key in seen_ranges and item.purpose not in {"cold_open", "replay", "callback"}:
+            if key in seen_ranges and item.purpose not in PREVIEW_PURPOSES:
                 problems.append("duplicate_content")
             seen_ranges[key] = item.purpose
+
+        # Editorial order may be non-chronological, but normal source segments must
+        # not partially overlap. Overlap is only intentional for preview/replay/callback.
+        for index, first in enumerate(self.timeline):
+            for second in self.timeline[index + 1:]:
+                if not _source_ranges_overlap(first, second):
+                    continue
+                if first.purpose in PREVIEW_PURPOSES or second.purpose in PREVIEW_PURPOSES:
+                    continue
+                problems.append("overlapping_source_segments")
 
         for item in self.visual_events:
             problems.extend(item.validate())
