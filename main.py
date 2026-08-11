@@ -19,7 +19,7 @@ from src.config import (
     TRANSCRIPT_DIR,
 )
 from src.v3_config import V3_ENABLED
-from src.logger import info, success
+from src.logger import info, success, warning
 from src.transcribe import transcribe
 from src.chunk_transcript import chunk_transcript
 from src.highlights.candidate_generator import generate_candidates
@@ -52,6 +52,45 @@ def timed_step(func, *args, **kwargs):
     return result, time.time() - started
 
 
+def _pre_v3_checkpoint_path(video_name: str) -> Path:
+    return HIGHLIGHTS_DIR / "checkpoints" / f"{video_name}_pre_v3.json"
+
+
+def _working_highlights_path(video_name: str) -> Path:
+    return HIGHLIGHTS_DIR / f"{video_name}.json"
+
+
+def _save_pre_v3_checkpoint(video_name: str) -> Path:
+    source = _working_highlights_path(video_name)
+    if not source.exists():
+        raise FileNotFoundError(source)
+    checkpoint = _pre_v3_checkpoint_path(video_name)
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, checkpoint)
+    success(f"[CHECKPOINT] Salvat pre-V3: {checkpoint}")
+    return checkpoint
+
+
+def _prepare_v3_resume_checkpoint(video_name: str) -> Path:
+    working = _working_highlights_path(video_name)
+    checkpoint = _pre_v3_checkpoint_path(video_name)
+    if checkpoint.exists():
+        shutil.copy2(checkpoint, working)
+        info(f"[CHECKPOINT] Restaurat baseline pre-V3: {checkpoint}")
+        return checkpoint
+
+    if not working.exists():
+        raise FileNotFoundError(working)
+
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(working, checkpoint)
+    warning(
+        "[CHECKPOINT] Nu exista un baseline pre-V3 dintr-un run complet; "
+        "salvez highlights-ul curent ca baseline pentru retry-urile următoare."
+    )
+    return checkpoint
+
+
 def _resume_required_paths(video_name: str, resume_from: str | None) -> list[Path]:
     if resume_from == "v3":
         return [
@@ -78,7 +117,7 @@ def _validate_resume_prerequisites(video_name: str, resume_from: str | None) -> 
 
 def _cleanup_targets(video_name: str, resume_from: str | None) -> list[Path]:
     if resume_from == "v3":
-        # Preserve transcript/highlights and upstream debug/cache artifacts.
+        # Preserve transcript/highlights/checkpoint and upstream debug/cache artifacts.
         # Only downstream render state and stale V3 edit plans are reset.
         return [
             OUTPUT_DIR,
@@ -132,7 +171,7 @@ def parse_args():
         default=None,
         help=(
             "Reia procesarea direct de la etapa V3 Editorial folosind transcriptul și "
-            "highlights existente; sare peste etapele 1-7."
+            "checkpoint-ul pre-V3; sare peste etapele 1-7."
         ),
     )
     parser.add_argument(
@@ -174,14 +213,16 @@ def main():
         raise ValueError("--resume-from v3 necesită V3 activ (--v3-mode on sau V3_ENABLED=true).")
 
     _validate_resume_prerequisites(video_name, resume_from)
+    if resume_from == "v3":
+        _prepare_v3_resume_checkpoint(video_name)
 
     pipeline_started = time.time()
     timings = {}
 
     if resume_from == "v3":
         info(
-            "[RESUME] Reiau de la V3 Editorial; păstrez transcriptul, highlights și "
-            "rezultatele etapelor 1-7."
+            "[RESUME] Reiau de la V3 Editorial; restaurez baseline-ul pre-V3 și "
+            "sar peste etapele 1-7."
         )
     else:
         info("Curăț fișierele vechi...")
@@ -266,6 +307,9 @@ def main():
         else:
             info("7/11 Hook START Optimizer dezactivat.")
             timings["hook_optimizer"] = 0.0
+
+        if v3_requested:
+            _save_pre_v3_checkpoint(video_name)
 
     if v3_requested:
         info("8/11 V3 Editorial Angle + Story + Originality + EditPlan...")
