@@ -37,6 +37,8 @@ def restructure_story(
     source_duration: float,
     enable_restructuring: bool = True,
     max_segments: int = 8,
+    allowed_start: float | None = None,
+    allowed_end: float | None = None,
 ) -> tuple[list[TimelineSegment], dict]:
     fallback = _fallback_segments(clip)
     if not enable_restructuring:
@@ -57,15 +59,18 @@ def restructure_story(
                 source_end=float(item["source_end"]),
                 purpose=str(item.get("purpose", "context")).lower(),
                 preserve_audio=bool(item.get("preserve_audio", True)),
-                # V3 deliberately stays at 1x until audio + word timestamps can be
-                # retimed together without subtitle/karaoke drift.
                 playback_rate=1.0,
                 semantic_note=str(item.get("semantic_note", ""))[:240],
             )
         except Exception:
             return fallback, {"reordered": False, "fallback": "invalid_item"}
+
         if seg.validate(source_duration):
             return fallback, {"reordered": False, "fallback": "invalid_range"}
+        if allowed_start is not None and seg.source_start < float(allowed_start) - 0.001:
+            return fallback, {"reordered": False, "fallback": "outside_analyzed_context"}
+        if allowed_end is not None and seg.source_end > float(allowed_end) + 0.001:
+            return fallback, {"reordered": False, "fallback": "outside_analyzed_context"}
         segments.append(seg)
 
     if not segments:
