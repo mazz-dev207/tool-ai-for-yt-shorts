@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from src.editing.sound_design import build_audio_events
 from src.editing.visual_grammar import build_visual_events
+from src.editing.visual_hooks import (
+    apply_visual_hook_timeline,
+    build_visual_hook_event,
+    select_visual_hook,
+)
 from src.hooks.v3 import filter_truthful_overlays
 from src.v3.models import ContextOverlay, EditPlan, TimelineSegment
-from src.v3_config import load_editorial_profile
+from src.v3_config import V3_ENABLE_VISUAL_HOOK_ENGINE, load_editorial_profile
 
 
 def _overlays(
@@ -96,6 +101,34 @@ def build_edit_plan(
                 ),
             )
 
+    visual_hook = {
+        "technique": "none",
+        "confidence": 0.0,
+        "source_supported": False,
+        "source_start": None,
+        "source_end": None,
+        "apply_mode": "none",
+        "direction": "none",
+        "reason": "Visual Hook Engine disabled.",
+        "inferred": True,
+    }
+    visual_hook_timeline_changed = False
+    if V3_ENABLE_VISUAL_HOOK_ENGINE:
+        visual_hook = select_visual_hook(
+            proposal,
+            hook=hook,
+            timeline=timeline,
+            content_profile=content_profile,
+        )
+        timeline, visual_hook_timeline_changed = apply_visual_hook_timeline(
+            timeline,
+            visual_hook,
+        )
+
+    effective_no_transformation = bool(no_transformation_needed)
+    if visual_hook_timeline_changed:
+        effective_no_transformation = False
+
     effect_budget = _visual_budget(
         editorial_profile,
         max_effects_per_event,
@@ -106,9 +139,21 @@ def build_edit_plan(
             max_effects_per_event=effect_budget,
             content_profile=content_profile,
         )
-        if enable_semantic_effects and not no_transformation_needed
+        if enable_semantic_effects and not effective_no_transformation
         else []
     )
+
+    visual_hook_event = (
+        build_visual_hook_event(visual_hook)
+        if V3_ENABLE_VISUAL_HOOK_ENGINE and enable_semantic_effects
+        else None
+    )
+    if visual_hook_event is not None:
+        # One dominant opening hook. Do not stack a second zoom/effect in the
+        # same first half-second; later semantic effects remain untouched.
+        visual_events = [item for item in visual_events if float(item.time) > 0.55]
+        visual_events.insert(0, visual_hook_event)
+        effective_no_transformation = False
 
     profile_sound_enabled, max_audio_events, gain_cap_db = _sound_policy(
         editorial_profile
@@ -118,7 +163,7 @@ def build_edit_plan(
         enabled=(
             enable_sound_design
             and profile_sound_enabled
-            and not no_transformation_needed
+            and not effective_no_transformation
         ),
         max_total_events=max_audio_events,
         gain_cap_db=gain_cap_db,
@@ -126,7 +171,7 @@ def build_edit_plan(
 
     overlays = _overlays(
         proposal,
-        enable_context_overlays and not no_transformation_needed,
+        enable_context_overlays and not effective_no_transformation,
         editorial_profile,
     )
 
@@ -149,7 +194,7 @@ def build_edit_plan(
         viewer_question=angle.viewer_question,
         stakes=angle.stakes,
         payoff=angle.payoff,
-        no_transformation_needed=no_transformation_needed,
+        no_transformation_needed=effective_no_transformation,
         metadata={
             "content_profile": content_profile,
             "editorial_profile": str(
@@ -164,5 +209,7 @@ def build_edit_plan(
                 "ending_behavior", "hard_cut_after_reaction"
             ),
             "angle_confidence": angle.confidence,
+            "visual_hook": visual_hook,
+            "visual_hook_timeline_changed": visual_hook_timeline_changed,
         },
     )
