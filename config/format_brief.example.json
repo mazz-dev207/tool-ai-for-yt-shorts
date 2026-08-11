@@ -1,0 +1,12 @@
+{
+  "channel": "MazClips Gaming",
+  "target_niche": "gaming",
+  "target_subniche": "streamer moments",
+  "priority_formats": [
+    "gaming_high_stakes_fail_reaction",
+    "gaming_clutch_comeback",
+    "gaming_visual_surprise"
+  ],
+  "reference_patterns": [],
+  "source": "manual_or_trend_finder"
+}
