@@ -46,6 +46,15 @@ def clean_folder(folder: Path):
             shutil.rmtree(item)
 
 
+def clean_matching_files(folder: Path, pattern: str) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    for item in folder.glob(pattern):
+        if item.is_file() or item.is_symlink():
+            item.unlink()
+        elif item.is_dir():
+            shutil.rmtree(item)
+
+
 def timed_step(func, *args, **kwargs):
     started = time.time()
     result = func(*args, **kwargs)
@@ -117,13 +126,12 @@ def _validate_resume_prerequisites(video_name: str, resume_from: str | None) -> 
 
 def _cleanup_targets(video_name: str, resume_from: str | None) -> list[Path]:
     if resume_from == "v3":
-        # Preserve transcript/highlights/checkpoint and upstream debug/cache artifacts.
-        # Only downstream render state and stale V3 edit plans are reset.
+        # Preserve current output clips, subtitles and finals until V3 tells us
+        # whether there is anything executable to rebuild. This makes quota
+        # retries cheap and prevents deleting good existing renders.
         return [
-            OUTPUT_DIR,
-            SUBTITLES_DIR,
-            FINAL_DIR,
             HIGHLIGHTS_DIR / "v3" / video_name,
+            OUTPUT_DIR / "debug" / video_name,
         ]
     return [
         TRANSCRIPT_DIR,
@@ -133,6 +141,24 @@ def _cleanup_targets(video_name: str, resume_from: str | None) -> list[Path]:
         FINAL_DIR,
         TEMP_DIR,
     ]
+
+
+def _existing_final_outputs() -> list[Path]:
+    return sorted(
+        FINAL_DIR.glob("clip_*_final.mp4"),
+        key=lambda path: path.name,
+    )
+
+
+def _should_keep_existing_downstream(
+    resume_from: str | None,
+    v3_execute: bool,
+) -> bool:
+    return (
+        resume_from == "v3"
+        and not v3_execute
+        and bool(_existing_final_outputs())
+    )
 
 
 def parse_args():
@@ -324,55 +350,80 @@ def main():
         timings["v3_editorial"] = 0.0
 
     v3_execute = v3_requested and has_executable_v3_changes(video_name)
+    keep_existing_downstream = _should_keep_existing_downstream(
+        resume_from,
+        v3_execute,
+    )
+
     if v3_requested and not v3_execute:
-        info(
-            "[V3] Nicio transformare executabilă necesară; "
-            "folosesc exact cut/render path-ul V2."
+        if keep_existing_downstream:
+            info(
+                "[RESUME] V3 nu a produs transformări executabile; "
+                "păstrez clipurile finale existente și sar peste etapele 9-11."
+            )
+        else:
+            info(
+                "[V3] Nicio transformare executabilă necesară; "
+                "folosesc exact cut/render path-ul V2."
+            )
+
+    if keep_existing_downstream:
+        timings["cut"] = 0.0
+        timings["captions"] = 0.0
+        timings["render"] = 0.0
+        timings["semantic_post"] = 0.0
+        clips = _existing_final_outputs()
+    else:
+        if resume_from == "v3":
+            # V3 really needs a rebuild (or no final outputs exist). Remove only
+            # downstream media artifacts now, after the execution decision.
+            clean_matching_files(OUTPUT_DIR, "clip_*.mp4")
+            clean_folder(SUBTITLES_DIR)
+            clean_folder(FINAL_DIR)
+
+        info("9/11 SmartCut / asamblare timeline...")
+        _, timings["cut"] = timed_step(
+            cut_v3 if v3_execute else cut,
+            video_name,
         )
 
-    info("9/11 SmartCut / asamblare timeline...")
-    _, timings["cut"] = timed_step(
-        cut_v3 if v3_execute else cut,
-        video_name,
-    )
+        info("10/11 Generare subtitrări + karaoke...")
+        caption_engine = CaptionEngine()
+        _, timings["captions"] = timed_step(
+            caption_engine.generate,
+            video_name,
+        )
 
-    info("10/11 Generare subtitrări + karaoke...")
-    caption_engine = CaptionEngine()
-    _, timings["captions"] = timed_step(
-        caption_engine.generate,
-        video_name,
-    )
+        clips = sorted(
+            OUTPUT_DIR.glob("clip_*.mp4"),
+            key=lambda path: int(path.stem.split("_")[1]),
+        )
+        if not clips:
+            raise RuntimeError("Nu au fost generate clipuri.")
 
-    clips = sorted(
-        OUTPUT_DIR.glob("clip_*.mp4"),
-        key=lambda path: int(path.stem.split("_")[1]),
-    )
-    if not clips:
-        raise RuntimeError("Nu au fost generate clipuri.")
+        info(
+            f"11/11 SmartCrop + render + semantic post-processing {len(clips)} clipuri | "
+            f"SmartCrop mode={args.smartcrop_mode}"
+        )
+        render_started = time.time()
+        rendered_outputs = [
+            render(clip.stem, args.content_profile)
+            for clip in clips
+        ]
+        timings["render"] = time.time() - render_started
 
-    info(
-        f"11/11 SmartCrop + render + semantic post-processing {len(clips)} clipuri | "
-        f"SmartCrop mode={args.smartcrop_mode}"
-    )
-    render_started = time.time()
-    rendered_outputs = [
-        render(clip.stem, args.content_profile)
-        for clip in clips
-    ]
-    timings["render"] = time.time() - render_started
-
-    if v3_execute:
-        started = time.time()
-        for index, output in enumerate(rendered_outputs, start=1):
-            post_process_v3(
-                video_name=video_name,
-                clip_index=index,
-                rendered_path=Path(output),
-            )
-        timings["semantic_post"] = time.time() - started
-    else:
-        info("[V3] Semantic effects neutilizate.")
-        timings["semantic_post"] = 0.0
+        if v3_execute:
+            started = time.time()
+            for index, output in enumerate(rendered_outputs, start=1):
+                post_process_v3(
+                    video_name=video_name,
+                    clip_index=index,
+                    rendered_path=Path(output),
+                )
+            timings["semantic_post"] = time.time() - started
+        else:
+            info("[V3] Semantic effects neutilizate.")
+            timings["semantic_post"] = 0.0
 
     if v3_requested:
         export_experiment_metadata(video_name)
@@ -380,11 +431,17 @@ def main():
     total_elapsed = time.time() - pipeline_started
 
     print()
-    success(
-        "AI Shorts V3 pipeline terminat cu succes!"
-        if v3_execute
-        else "Pipeline terminat cu succes (V2-compatible execution path)!"
-    )
+    if keep_existing_downstream:
+        success(
+            "Resume V3 terminat fără transformări noi; "
+            "rezultatele finale existente au fost păstrate."
+        )
+    else:
+        success(
+            "AI Shorts V3 pipeline terminat cu succes!"
+            if v3_execute
+            else "Pipeline terminat cu succes (V2-compatible execution path)!"
+        )
     print()
     print(f"Clipuri generate: {len(clips)}")
     print(f"Rezultate finale: {FINAL_DIR}")
