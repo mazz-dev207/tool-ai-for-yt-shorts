@@ -74,7 +74,7 @@ def parse_args():
         "--smartcrop-mode",
         choices=["auto", "gameplay-webcam", "gameplay-only"],
         default="auto",
-        help="Politica SmartCrop. gameplay-webcam forțează contractul webcam sus 35-40% / gameplay jos 60-65%.",
+        help="Politica SmartCrop. gameplay-webcam forțează contractul webcam sus 35-40 la sută / gameplay jos 60-65 la sută.",
     )
     parser.add_argument(
         "--v3-mode",
