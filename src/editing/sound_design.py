@@ -3,20 +3,40 @@ from __future__ import annotations
 from src.v3.models import AudioEvent
 
 
-def build_audio_events(proposal: dict, *, enabled: bool, max_total_events: int = 3, gain_cap_db: float = -9.0) -> list[AudioEvent]:
+DEFAULT_SFX_ASSETS = {
+    "impact": "impact.wav",
+    "accent": "soft_accent.wav",
+    "whoosh": "whoosh.wav",
+}
+
+
+def build_audio_events(
+    proposal: dict,
+    *,
+    enabled: bool,
+    max_total_events: int = 3,
+    gain_cap_db: float = -9.0,
+) -> list[AudioEvent]:
     if not enabled:
         return []
     result = []
     for raw in proposal.get("audio_events", []) or []:
         if len(result) >= max_total_events:
             break
+        effect = str(raw.get("effect", "accent") or "accent").lower()
+        asset = str(raw.get("asset", "") or "").strip()
+        if not asset:
+            asset = DEFAULT_SFX_ASSETS.get(effect, "")
         event = AudioEvent(
             time=float(raw.get("time", 0.0) or 0.0),
-            effect=str(raw.get("effect", "accent") or "accent").lower(),
+            effect=effect,
             intensity=float(raw.get("intensity", 0.35) or 0.35),
             duration=float(raw.get("duration", 0.35) or 0.35),
-            gain_db=min(float(gain_cap_db), float(raw.get("gain_db", -12.0) or -12.0)),
-            asset=str(raw.get("asset", "") or ""),
+            gain_db=min(
+                float(gain_cap_db),
+                float(raw.get("gain_db", -12.0) or -12.0),
+            ),
+            asset=asset,
         )
         if not event.validate():
             result.append(event)
