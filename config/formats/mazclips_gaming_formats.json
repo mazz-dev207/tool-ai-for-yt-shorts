@@ -1,0 +1,90 @@
+{
+  "library_id": "mazclips_gaming",
+  "version": 1,
+  "formats": [
+    {
+      "id": "gaming_high_stakes_fail_reaction",
+      "version": 1,
+      "enabled": true,
+      "niche": "gaming",
+      "subniche": "streamer_moments",
+      "format_name": "High-Stakes Fail + Reaction",
+      "description": "A clear attempt with understandable stakes ends in an unexpected failure followed by a strong authentic reaction.",
+      "required_signals": ["clear_goal", "stakes_or_risk", "failure_or_reversal", "reaction"],
+      "preferred_hook_types": ["native", "reconstructed"],
+      "preferred_story_shape": ["cold_open", "compressed_context", "escalation", "payoff", "reaction"],
+      "avoid": ["long_explanation", "unclear_goal", "reaction_without_context"],
+      "target_duration_seconds": [12, 28]
+    },
+    {
+      "id": "gaming_clutch_comeback",
+      "version": 1,
+      "enabled": true,
+      "niche": "gaming",
+      "subniche": "competitive_gameplay",
+      "format_name": "Clutch / Comeback",
+      "description": "A bad position rapidly escalates into an unlikely recovery or win with a clear payoff.",
+      "required_signals": ["bad_position", "escalation", "clutch_or_recovery", "payoff"],
+      "preferred_hook_types": ["native", "reconstructed"],
+      "preferred_story_shape": ["cold_open", "compressed_context", "escalation", "payoff"],
+      "avoid": ["unclear_game_state", "payoff_without_stakes"],
+      "target_duration_seconds": [10, 26]
+    },
+    {
+      "id": "gaming_visual_surprise",
+      "version": 1,
+      "enabled": true,
+      "niche": "gaming",
+      "subniche": "streamer_moments",
+      "format_name": "WTF / Visual Surprise",
+      "description": "A normal state is interrupted by an unexpected visual event followed by an immediate reaction or consequence.",
+      "required_signals": ["normal_state", "visual_surprise", "reaction_or_consequence"],
+      "preferred_hook_types": ["native", "reconstructed", "editorial"],
+      "preferred_story_shape": ["cold_open", "context", "payoff", "reaction"],
+      "avoid": ["surprise_without_context", "generic_gameplay"],
+      "target_duration_seconds": [8, 24]
+    },
+    {
+      "id": "gaming_funny_player_interaction",
+      "version": 1,
+      "enabled": true,
+      "niche": "gaming",
+      "subniche": "social_gameplay",
+      "format_name": "Funny Player Interaction",
+      "description": "A recognizable social setup leads to misunderstanding, conflict, punchline or reaction.",
+      "required_signals": ["social_interaction", "misunderstanding_or_conflict", "punchline_or_reaction"],
+      "preferred_hook_types": ["native", "reconstructed"],
+      "preferred_story_shape": ["hook", "context", "escalation", "payoff", "reaction"],
+      "avoid": ["inside_joke_without_context", "long_conversation"],
+      "target_duration_seconds": [12, 32]
+    },
+    {
+      "id": "gaming_challenge_attempt",
+      "version": 1,
+      "enabled": true,
+      "niche": "gaming",
+      "subniche": "challenge",
+      "format_name": "Challenge Attempt",
+      "description": "An explicit objective under a clear constraint escalates toward success or failure.",
+      "required_signals": ["clear_goal", "constraint", "escalation", "success_or_failure"],
+      "preferred_hook_types": ["native", "editorial"],
+      "preferred_story_shape": ["hook", "compressed_context", "escalation", "payoff", "reaction"],
+      "avoid": ["unclear_objective", "no_constraint", "no_payoff"],
+      "target_duration_seconds": [12, 30]
+    },
+    {
+      "id": "gaming_rage_emotional_reversal",
+      "version": 1,
+      "enabled": true,
+      "niche": "gaming",
+      "subniche": "gaming_reactions",
+      "format_name": "Rage / Emotional Reversal",
+      "description": "An expectation is broken by a sudden negative event that triggers a genuine emotional reaction.",
+      "required_signals": ["expectation", "negative_reversal", "reaction"],
+      "preferred_hook_types": ["native", "reconstructed"],
+      "preferred_story_shape": ["cold_open", "context", "reversal", "reaction"],
+      "avoid": ["fake_hype", "reaction_without_trigger"],
+      "target_duration_seconds": [8, 24]
+    }
+  ]
+}
