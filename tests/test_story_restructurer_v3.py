@@ -24,6 +24,22 @@ class StoryRestructurerTests(unittest.TestCase):
         self.assertIsNotNone(debug["fallback"])
         self.assertEqual(segments[0].source_start, 10.0)
 
+    def test_partial_overlap_between_normal_story_beats_falls_back(self):
+        clip = {"start": 10.0, "end": 20.0}
+        proposal = {"timeline": [
+            {"source_start": 10.0, "source_end": 14.0, "purpose": "context"},
+            {"source_start": 13.5, "source_end": 17.0, "purpose": "escalation"},
+            {"source_start": 18.0, "source_end": 20.0, "purpose": "payoff"},
+        ]}
+        segments, debug = restructure_story(
+            clip=clip,
+            proposal=proposal,
+            source_duration=30.0,
+            enable_restructuring=True,
+        )
+        self.assertEqual(debug["fallback"], "overlapping_source_segments")
+        self.assertEqual(segments[0].source_start, 10.0)
+
 
 if __name__ == "__main__":
     unittest.main()
