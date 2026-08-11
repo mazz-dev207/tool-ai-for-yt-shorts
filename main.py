@@ -52,6 +52,50 @@ def timed_step(func, *args, **kwargs):
     return result, time.time() - started
 
 
+def _resume_required_paths(video_name: str, resume_from: str | None) -> list[Path]:
+    if resume_from == "v3":
+        return [
+            TRANSCRIPT_DIR / f"{video_name}.json",
+            HIGHLIGHTS_DIR / f"{video_name}.json",
+        ]
+    return []
+
+
+def _validate_resume_prerequisites(video_name: str, resume_from: str | None) -> None:
+    missing = [
+        path
+        for path in _resume_required_paths(video_name, resume_from)
+        if not path.exists()
+    ]
+    if missing:
+        rendered = "\n".join(f"- {path}" for path in missing)
+        raise FileNotFoundError(
+            "Resume-ul nu poate porni deoarece lipsesc artefactele upstream:\n"
+            f"{rendered}\n"
+            "Rulează o dată pipeline-ul complet pentru acest video înainte de --resume-from v3."
+        )
+
+
+def _cleanup_targets(video_name: str, resume_from: str | None) -> list[Path]:
+    if resume_from == "v3":
+        # Preserve transcript/highlights and upstream debug/cache artifacts.
+        # Only downstream render state and stale V3 edit plans are reset.
+        return [
+            OUTPUT_DIR,
+            SUBTITLES_DIR,
+            FINAL_DIR,
+            HIGHLIGHTS_DIR / "v3" / video_name,
+        ]
+    return [
+        TRANSCRIPT_DIR,
+        HIGHLIGHTS_DIR,
+        OUTPUT_DIR,
+        SUBTITLES_DIR,
+        FINAL_DIR,
+        TEMP_DIR,
+    ]
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="AI Shorts V3 Format-Aware Editorial Pipeline")
     parser.add_argument(
@@ -83,6 +127,15 @@ def parse_args():
         help="auto folosește V3_ENABLED; on forțează V3; off rulează pipeline-ul V2.",
     )
     parser.add_argument(
+        "--resume-from",
+        choices=["v3"],
+        default=None,
+        help=(
+            "Reia procesarea direct de la etapa V3 Editorial folosind transcriptul și "
+            "highlights existente; sare peste etapele 1-7."
+        ),
+    )
+    parser.add_argument(
         "--channel-strategy",
         default=None,
         help="Fișier JSON ChannelStrategy. Dacă lipsește, V3 folosește strategia configurată/fallback pentru profil.",
@@ -110,84 +163,109 @@ def main():
     video_name = args.video_name
     video_path = INPUT_DIR / f"{video_name}.mp4"
     v3_requested = V3_ENABLED if args.v3_mode == "auto" else args.v3_mode == "on"
+    resume_from = args.resume_from
     os.environ["SMARTCROP_MODE_RUNTIME"] = args.smartcrop_mode
 
     if not video_path.exists():
         print(f"Fișierul nu există:\n{video_path}")
         sys.exit(1)
 
+    if resume_from == "v3" and not v3_requested:
+        raise ValueError("--resume-from v3 necesită V3 activ (--v3-mode on sau V3_ENABLED=true).")
+
+    _validate_resume_prerequisites(video_name, resume_from)
+
     pipeline_started = time.time()
     timings = {}
 
-    info("Curăț fișierele vechi...")
+    if resume_from == "v3":
+        info(
+            "[RESUME] Reiau de la V3 Editorial; păstrez transcriptul, highlights și "
+            "rezultatele etapelor 1-7."
+        )
+    else:
+        info("Curăț fișierele vechi...")
+
     started = time.time()
-    for folder in [
-        TRANSCRIPT_DIR,
-        HIGHLIGHTS_DIR,
-        OUTPUT_DIR,
-        SUBTITLES_DIR,
-        FINAL_DIR,
-        TEMP_DIR,
-    ]:
+    for folder in _cleanup_targets(video_name, resume_from):
         clean_folder(folder)
     timings["cleanup"] = time.time() - started
 
-    info("1/11 Transcriere...")
-    _, timings["transcription"] = timed_step(transcribe, video_path)
+    if resume_from == "v3":
+        for key in [
+            "transcription",
+            "chunking",
+            "candidate_discovery",
+            "format_intelligence",
+            "gemini_judge",
+            "retention",
+            "hook_optimizer",
+        ]:
+            timings[key] = 0.0
+        info("[RESUME] 1/11 Transcriere... SKIP")
+        info("[RESUME] 2/11 Creare ferestre analiză... SKIP")
+        info("[RESUME] 3/11 Candidate discovery... SKIP")
+        info("[RESUME] 4/11 Format Intelligence + strategic gate... SKIP")
+        info("[RESUME] 5/11 Gemini Highlight Judge... SKIP")
+        info("[RESUME] 6/11 Optimizare pentru retenție... SKIP")
+        info("[RESUME] 7/11 Hook START Optimizer... SKIP")
+    else:
+        info("1/11 Transcriere...")
+        _, timings["transcription"] = timed_step(transcribe, video_path)
 
-    info("2/11 Creare ferestre analiză...")
-    _, timings["chunking"] = timed_step(chunk_transcript, video_name)
+        info("2/11 Creare ferestre analiză...")
+        _, timings["chunking"] = timed_step(chunk_transcript, video_name)
 
-    info("3/11 Candidate discovery...")
-    _, timings["candidate_discovery"] = timed_step(
-        generate_candidates,
-        video_name,
-        args.highlight_mode in {"gemini", "compare"},
-        args.content_profile,
-    )
-
-    if v3_requested:
-        info("4/11 Format Intelligence + strategic gate...")
-        _, timings["format_intelligence"] = timed_step(
-            apply_format_intelligence,
+        info("3/11 Candidate discovery...")
+        _, timings["candidate_discovery"] = timed_step(
+            generate_candidates,
             video_name,
+            args.highlight_mode in {"gemini", "compare"},
             args.content_profile,
-            strategy_path=args.channel_strategy,
-            format_brief_path=args.format_brief,
-            manual_format_id=args.format_id,
-            skip_low_fit=args.skip_low_format_fit,
         )
-    else:
-        info("4/11 Format Intelligence dezactivat împreună cu V3.")
-        timings["format_intelligence"] = 0.0
 
-    info("5/11 Gemini Highlight Judge...")
-    _, timings["gemini_judge"] = timed_step(
-        run_gemini_highlight_stage,
-        video_name,
-        video_path,
-        args.highlight_mode,
-        args.content_profile,
-    )
+        if v3_requested:
+            info("4/11 Format Intelligence + strategic gate...")
+            _, timings["format_intelligence"] = timed_step(
+                apply_format_intelligence,
+                video_name,
+                args.content_profile,
+                strategy_path=args.channel_strategy,
+                format_brief_path=args.format_brief,
+                manual_format_id=args.format_id,
+                skip_low_fit=args.skip_low_format_fit,
+            )
+        else:
+            info("4/11 Format Intelligence dezactivat împreună cu V3.")
+            timings["format_intelligence"] = 0.0
 
-    if RETENTION_ENABLED:
-        info("6/11 Optimizare pentru retenție...")
-        _, timings["retention"] = timed_step(optimize_retention, video_name)
-    else:
-        info("6/11 Retention engine dezactivat.")
-        timings["retention"] = 0.0
-
-    if HOOK_OPTIMIZER_ENABLED:
-        info("7/11 Hook START Optimizer...")
-        _, timings["hook_optimizer"] = timed_step(
-            optimize_hooks,
+        info("5/11 Gemini Highlight Judge...")
+        _, timings["gemini_judge"] = timed_step(
+            run_gemini_highlight_stage,
             video_name,
             video_path,
+            args.highlight_mode,
             args.content_profile,
         )
-    else:
-        info("7/11 Hook START Optimizer dezactivat.")
-        timings["hook_optimizer"] = 0.0
+
+        if RETENTION_ENABLED:
+            info("6/11 Optimizare pentru retenție...")
+            _, timings["retention"] = timed_step(optimize_retention, video_name)
+        else:
+            info("6/11 Retention engine dezactivat.")
+            timings["retention"] = 0.0
+
+        if HOOK_OPTIMIZER_ENABLED:
+            info("7/11 Hook START Optimizer...")
+            _, timings["hook_optimizer"] = timed_step(
+                optimize_hooks,
+                video_name,
+                video_path,
+                args.content_profile,
+            )
+        else:
+            info("7/11 Hook START Optimizer dezactivat.")
+            timings["hook_optimizer"] = 0.0
 
     if v3_requested:
         info("8/11 V3 Editorial Angle + Story + Originality + EditPlan...")
@@ -266,6 +344,8 @@ def main():
     print()
     print(f"Clipuri generate: {len(clips)}")
     print(f"Rezultate finale: {FINAL_DIR}")
+    if resume_from:
+        print(f"Resume mode: {resume_from}")
     print()
     print("--- TIMPI PIPELINE ---")
     for key in [
