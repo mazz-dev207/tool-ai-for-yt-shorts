@@ -55,7 +55,7 @@ class TimelineSegment:
 
     @property
     def duration(self) -> float:
-        return max(0.0, (self.source_end - self.source_start) / max(0.1, self.playback_rate))
+        return max(0.0, self.source_end - self.source_start)
 
     def validate(self, source_duration: float | None = None) -> list[str]:
         problems: list[str] = []
@@ -63,6 +63,8 @@ class TimelineSegment:
         self.source_end = float(self.source_end)
         self.purpose = str(self.purpose or "context").lower()
         self.playback_rate = _clamp(self.playback_rate or 1.0, 0.5, 2.0)
+        if abs(self.playback_rate - 1.0) > 0.001:
+            problems.append("playback_rate_not_supported_yet")
         if self.source_start < 0 or self.source_end <= self.source_start:
             problems.append("invalid_segment_duration")
         if source_duration is not None and self.source_end > float(source_duration) + 0.001:
