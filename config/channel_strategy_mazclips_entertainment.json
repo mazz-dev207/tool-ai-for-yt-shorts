@@ -1,0 +1,26 @@
+{
+  "channel_name": "MazClips Entertainment",
+  "primary_niche": "entertainment",
+  "positioning": "Fast, self-contained creator and viral moments with an immediate hook, clear context, authentic reaction and a satisfying payoff.",
+  "priority_subniches": [
+    "creator_moments",
+    "funny_interactions",
+    "challenges",
+    "reactions"
+  ],
+  "priority_formats": [
+    "entertainment_unexpected_reaction",
+    "entertainment_funny_interaction",
+    "entertainment_challenge_payoff",
+    "entertainment_emotional_reversal"
+  ],
+  "avoid": [
+    "context-heavy moments that require the full video",
+    "generic talking with no escalation or payoff",
+    "random moments selected only because the creator is famous",
+    "forced or fake reactions without a clear trigger"
+  ],
+  "min_format_fit": 45,
+  "min_content_opportunity": 50,
+  "version": 1
+}
