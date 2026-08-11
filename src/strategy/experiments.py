@@ -31,6 +31,7 @@ def export_experiment_metadata(video_name: str) -> Path | None:
     items = []
     for index, clip in enumerate(clips, start=1):
         v3 = clip.get("v3") or {}
+        strategy_context = clip.get("strategy_context") or {}
         metadata = ExperimentMetadata(
             short_id=f"{video_name}_clip_{index}",
             format_id=str(clip.get("format_id", "unclassified") or "unclassified"),
@@ -48,6 +49,11 @@ def export_experiment_metadata(video_name: str) -> Path | None:
 
         debug_dir = OUTPUT_DIR / "debug" / video_name / f"clip_{index}"
         _save(debug_dir / "experiment_metadata.json", item)
+        if strategy_context:
+            _save(debug_dir / "format_profile.json", strategy_context.get("format_profile", {}))
+            _save(debug_dir / "format_match.json", strategy_context.get("format_match", {}))
+            _save(debug_dir / "content_opportunity.json", strategy_context.get("content_opportunity", {}))
+            _save(debug_dir / "channel_strategy.json", strategy_context.get("channel_strategy", {}))
 
     output = OUTPUT_DIR / "debug" / video_name / "experiment_metadata.json"
     _save(
