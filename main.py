@@ -23,6 +23,7 @@ from src.logger import info, success
 from src.transcribe import transcribe
 from src.chunk_transcript import chunk_transcript
 from src.highlights.candidate_generator import generate_candidates
+from src.strategy.format_intelligence import apply_format_intelligence
 from src.highlights.gemini_pipeline import run_gemini_highlight_stage
 from src.retention.optimizer import optimize_retention
 from src.hooks.optimizer import optimize_hooks
@@ -33,6 +34,7 @@ from src.editing.smartcut_v3 import cut_v3
 from src.caption_engine import CaptionEngine
 from src.renderer import render
 from src.editing.post_processor import post_process_v3
+from src.strategy.experiments import export_experiment_metadata
 
 
 def clean_folder(folder: Path):
@@ -51,7 +53,7 @@ def timed_step(func, *args, **kwargs):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="AI Shorts V3 Editorial Pipeline")
+    parser = argparse.ArgumentParser(description="AI Shorts V3 Format-Aware Editorial Pipeline")
     parser.add_argument(
         "video_name",
         help="Numele fișierului video fără extensia .mp4",
@@ -79,6 +81,26 @@ def parse_args():
         choices=["auto", "on", "off"],
         default="auto",
         help="auto folosește V3_ENABLED; on forțează V3; off rulează pipeline-ul V2.",
+    )
+    parser.add_argument(
+        "--channel-strategy",
+        default=None,
+        help="Fișier JSON ChannelStrategy. Dacă lipsește, V3 folosește strategia configurată/fallback pentru profil.",
+    )
+    parser.add_argument(
+        "--format-brief",
+        default=None,
+        help="Fișier JSON importat opțional din Trend Finder sau creat manual.",
+    )
+    parser.add_argument(
+        "--format-id",
+        default=None,
+        help="Forțează un FormatProfile configurat (MODE A — manual format profile).",
+    )
+    parser.add_argument(
+        "--skip-low-format-fit",
+        action="store_true",
+        help="Elimină candidații care nu trec gate-ul strategic; dacă ar elimina tot, fallback-ul păstrează candidații originali.",
     )
     return parser.parse_args()
 
@@ -110,19 +132,36 @@ def main():
         clean_folder(folder)
     timings["cleanup"] = time.time() - started
 
-    info("1/10 Transcriere...")
+    info("1/11 Transcriere...")
     _, timings["transcription"] = timed_step(transcribe, video_path)
 
-    info("2/10 Creare ferestre analiză...")
+    info("2/11 Creare ferestre analiză...")
     _, timings["chunking"] = timed_step(chunk_transcript, video_name)
 
-    info("3/10 Candidate discovery + Highlight Judge...")
+    info("3/11 Candidate discovery...")
     _, timings["candidate_discovery"] = timed_step(
         generate_candidates,
         video_name,
         args.highlight_mode in {"gemini", "compare"},
         args.content_profile,
     )
+
+    if v3_requested:
+        info("4/11 Format Intelligence + strategic gate...")
+        _, timings["format_intelligence"] = timed_step(
+            apply_format_intelligence,
+            video_name,
+            args.content_profile,
+            strategy_path=args.channel_strategy,
+            format_brief_path=args.format_brief,
+            manual_format_id=args.format_id,
+            skip_low_fit=args.skip_low_format_fit,
+        )
+    else:
+        info("4/11 Format Intelligence dezactivat împreună cu V3.")
+        timings["format_intelligence"] = 0.0
+
+    info("5/11 Gemini Highlight Judge...")
     _, timings["gemini_judge"] = timed_step(
         run_gemini_highlight_stage,
         video_name,
@@ -132,14 +171,14 @@ def main():
     )
 
     if RETENTION_ENABLED:
-        info("4/10 Optimizare pentru retenție...")
+        info("6/11 Optimizare pentru retenție...")
         _, timings["retention"] = timed_step(optimize_retention, video_name)
     else:
-        info("4/10 Retention engine dezactivat.")
+        info("6/11 Retention engine dezactivat.")
         timings["retention"] = 0.0
 
     if HOOK_OPTIMIZER_ENABLED:
-        info("5/10 Hook START Optimizer...")
+        info("7/11 Hook START Optimizer...")
         _, timings["hook_optimizer"] = timed_step(
             optimize_hooks,
             video_name,
@@ -147,11 +186,11 @@ def main():
             args.content_profile,
         )
     else:
-        info("5/10 Hook START Optimizer dezactivat.")
+        info("7/11 Hook START Optimizer dezactivat.")
         timings["hook_optimizer"] = 0.0
 
     if v3_requested:
-        info("6/10 V3 Editorial Angle + Story + Originality + EditPlan...")
+        info("8/11 V3 Editorial Angle + Story + Originality + EditPlan...")
         _, timings["v3_editorial"] = timed_step(
             run_v3_editorial_stage,
             video_name,
@@ -159,7 +198,7 @@ def main():
             args.content_profile,
         )
     else:
-        info("6/10 V3 dezactivat; folosesc comportamentul V2.")
+        info("8/11 V3 dezactivat; folosesc comportamentul V2.")
         timings["v3_editorial"] = 0.0
 
     v3_execute = v3_requested and has_executable_v3_changes(video_name)
@@ -169,13 +208,13 @@ def main():
             "folosesc exact cut/render path-ul V2."
         )
 
-    info("7/10 SmartCut / asamblare timeline...")
+    info("9/11 SmartCut / asamblare timeline...")
     _, timings["cut"] = timed_step(
         cut_v3 if v3_execute else cut,
         video_name,
     )
 
-    info("8/10 Generare subtitrări + karaoke...")
+    info("10/11 Generare subtitrări + karaoke...")
     caption_engine = CaptionEngine()
     _, timings["captions"] = timed_step(
         caption_engine.generate,
@@ -190,7 +229,7 @@ def main():
         raise RuntimeError("Nu au fost generate clipuri.")
 
     info(
-        f"9/10 SmartCrop + render {len(clips)} clipuri | "
+        f"11/11 SmartCrop + render + semantic post-processing {len(clips)} clipuri | "
         f"SmartCrop mode={args.smartcrop_mode}"
     )
     render_started = time.time()
@@ -201,7 +240,6 @@ def main():
     timings["render"] = time.time() - render_started
 
     if v3_execute:
-        info("10/10 Semantic visual/audio execution...")
         started = time.time()
         for index, output in enumerate(rendered_outputs, start=1):
             post_process_v3(
@@ -211,8 +249,11 @@ def main():
             )
         timings["semantic_post"] = time.time() - started
     else:
-        info("10/10 Semantic V3 effects neutilizate.")
+        info("[V3] Semantic effects neutilizate.")
         timings["semantic_post"] = 0.0
+
+    if v3_requested:
+        export_experiment_metadata(video_name)
 
     total_elapsed = time.time() - pipeline_started
 
@@ -232,6 +273,7 @@ def main():
         "transcription",
         "chunking",
         "candidate_discovery",
+        "format_intelligence",
         "gemini_judge",
         "retention",
         "hook_optimizer",
