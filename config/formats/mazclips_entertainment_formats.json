@@ -1,0 +1,90 @@
+{
+  "library_id": "mazclips_entertainment",
+  "version": 1,
+  "formats": [
+    {
+      "id": "entertainment_unexpected_reaction",
+      "version": 1,
+      "enabled": true,
+      "niche": "entertainment",
+      "subniche": "creator_moments",
+      "format_name": "Unexpected Moment + Reaction",
+      "description": "A normal or understandable setup is interrupted by an unexpected event that triggers an immediate authentic reaction or consequence.",
+      "required_signals": ["normal_state", "visual_surprise", "reaction_or_consequence"],
+      "preferred_hook_types": ["native", "reconstructed", "editorial"],
+      "preferred_story_shape": ["cold_open", "context", "payoff", "reaction"],
+      "avoid": ["surprise_without_context", "fake_hype", "reaction_without_trigger"],
+      "target_duration_seconds": [8, 26]
+    },
+    {
+      "id": "entertainment_funny_interaction",
+      "version": 1,
+      "enabled": true,
+      "niche": "entertainment",
+      "subniche": "funny_interactions",
+      "format_name": "Funny Interaction / Punchline",
+      "description": "A recognizable social interaction develops into misunderstanding, conflict, punchline or a strong reaction.",
+      "required_signals": ["social_interaction", "misunderstanding_or_conflict", "punchline_or_reaction"],
+      "preferred_hook_types": ["native", "reconstructed"],
+      "preferred_story_shape": ["hook", "context", "escalation", "payoff", "reaction"],
+      "avoid": ["inside_joke_without_context", "long_conversation", "weak_punchline"],
+      "target_duration_seconds": [10, 34]
+    },
+    {
+      "id": "entertainment_challenge_payoff",
+      "version": 1,
+      "enabled": true,
+      "niche": "entertainment",
+      "subniche": "challenges",
+      "format_name": "Challenge + Payoff",
+      "description": "A clear objective under an understandable constraint escalates quickly toward a visible success, failure or twist.",
+      "required_signals": ["clear_goal", "constraint", "escalation", "success_or_failure"],
+      "preferred_hook_types": ["native", "editorial", "reconstructed"],
+      "preferred_story_shape": ["hook", "compressed_context", "escalation", "payoff", "reaction"],
+      "avoid": ["unclear_objective", "no_constraint", "no_payoff", "long_setup"],
+      "target_duration_seconds": [12, 35]
+    },
+    {
+      "id": "entertainment_social_conflict",
+      "version": 1,
+      "enabled": true,
+      "niche": "entertainment",
+      "subniche": "creator_moments",
+      "format_name": "Social Conflict / Awkward Turn",
+      "description": "A clear interpersonal setup turns into disagreement, awkwardness or confrontation and ends with a reaction or consequence.",
+      "required_signals": ["social_interaction", "misunderstanding_or_conflict", "reaction"],
+      "preferred_hook_types": ["native", "reconstructed", "editorial"],
+      "preferred_story_shape": ["cold_open", "context", "escalation", "payoff", "reaction"],
+      "avoid": ["context_heavy_argument", "unresolved_conversation", "manufactured_conflict"],
+      "target_duration_seconds": [12, 36]
+    },
+    {
+      "id": "entertainment_emotional_reversal",
+      "version": 1,
+      "enabled": true,
+      "niche": "entertainment",
+      "subniche": "reactions",
+      "format_name": "Expectation + Emotional Reversal",
+      "description": "An expectation is clearly established and then broken by an unexpected negative or positive turn that produces a genuine emotional reaction.",
+      "required_signals": ["expectation", "negative_reversal", "reaction"],
+      "preferred_hook_types": ["native", "reconstructed"],
+      "preferred_story_shape": ["cold_open", "context", "reversal", "reaction"],
+      "avoid": ["fake_hype", "reaction_without_trigger", "unclear_expectation"],
+      "target_duration_seconds": [8, 28]
+    },
+    {
+      "id": "entertainment_reveal_payoff",
+      "version": 1,
+      "enabled": true,
+      "niche": "entertainment",
+      "subniche": "creator_moments",
+      "format_name": "Reveal / Twist + Payoff",
+      "description": "A compact setup builds toward a reveal, twist or unexpected result with a clear consequence or reaction.",
+      "required_signals": ["escalation", "visual_surprise", "payoff"],
+      "preferred_hook_types": ["native", "editorial", "reconstructed"],
+      "preferred_story_shape": ["hook", "context", "escalation", "payoff", "reaction"],
+      "avoid": ["reveal_without_setup", "spoiled_payoff", "generic_reaction"],
+      "target_duration_seconds": [10, 30]
+    }
+  ]
+}
