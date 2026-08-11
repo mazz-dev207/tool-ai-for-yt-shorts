@@ -31,6 +31,36 @@ class V3ModelTests(unittest.TestCase):
         )
         self.assertIn("duplicate_content", plan.validate(source_duration=20))
 
+    def test_partial_overlap_between_normal_segments_is_invalid(self):
+        plan = EditPlan(
+            clip_index=1,
+            hook=HookPlan(),
+            timeline=[
+                TimelineSegment(4.0, 8.0, "context"),
+                TimelineSegment(7.5, 10.0, "escalation"),
+                TimelineSegment(11.0, 13.0, "payoff"),
+            ],
+        )
+        self.assertIn(
+            "overlapping_source_segments",
+            plan.validate(source_duration=20.0),
+        )
+
+    def test_cold_open_preview_may_overlap_payoff(self):
+        plan = EditPlan(
+            clip_index=1,
+            hook=HookPlan(),
+            timeline=[
+                TimelineSegment(18.0, 19.0, "cold_open"),
+                TimelineSegment(10.0, 14.0, "context"),
+                TimelineSegment(18.0, 20.0, "payoff"),
+            ],
+        )
+        self.assertNotIn(
+            "overlapping_source_segments",
+            plan.validate(source_duration=30.0),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
