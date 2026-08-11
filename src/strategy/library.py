@@ -8,7 +8,20 @@ from src.strategy.models import ChannelStrategy, FormatBrief, FormatProfile
 
 
 DEFAULT_GAMING_LIBRARY = BASE_DIR / "config" / "formats" / "mazclips_gaming_formats.json"
+DEFAULT_ENTERTAINMENT_LIBRARY = BASE_DIR / "config" / "formats" / "mazclips_entertainment_formats.json"
 DEFAULT_GAMING_STRATEGY = BASE_DIR / "config" / "channel_strategy_mazclips_gaming.json"
+DEFAULT_ENTERTAINMENT_STRATEGY = BASE_DIR / "config" / "channel_strategy_mazclips_entertainment.json"
+
+
+_FORMAT_LIBRARIES = {
+    "gaming": DEFAULT_GAMING_LIBRARY,
+    "entertainment": DEFAULT_ENTERTAINMENT_LIBRARY,
+}
+
+_STRATEGIES = {
+    "gaming": DEFAULT_GAMING_STRATEGY,
+    "entertainment": DEFAULT_ENTERTAINMENT_STRATEGY,
+}
 
 
 def _load_json(path: Path) -> dict:
@@ -49,12 +62,16 @@ def load_format_brief(path: Path | None) -> FormatBrief | None:
     return FormatBrief.from_dict(_load_json(path))
 
 
+def resolve_format_library_path(content_profile: str) -> Path | None:
+    profile = str(content_profile or "").strip().lower()
+    return _FORMAT_LIBRARIES.get(profile)
+
+
 def resolve_strategy_path(content_profile: str, explicit: str | None) -> Path | None:
     if explicit:
         return Path(explicit).expanduser().resolve()
-    if str(content_profile or "").strip().lower() == "gaming":
-        return DEFAULT_GAMING_STRATEGY
-    return None
+    profile = str(content_profile or "").strip().lower()
+    return _STRATEGIES.get(profile)
 
 
 def build_fallback_strategy(content_profile: str) -> ChannelStrategy:
