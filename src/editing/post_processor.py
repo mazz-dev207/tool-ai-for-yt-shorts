@@ -96,11 +96,57 @@ def _even(value: float) -> int:
     return parsed if parsed % 2 == 0 else parsed - 1
 
 
-def _write_visual_commands(plan: dict, clip_index: int) -> Path | None:
-    """Create FFmpeg sendcmd commands for safe semantic center punch-ins.
+def _append_reset(commands: list[tuple[float, str]], end: float) -> None:
+    for name, value in (("w", FRAME_WIDTH), ("h", FRAME_HEIGHT), ("x", 0), ("y", 0)):
+        commands.append((end, f"{end:.3f} crop@v3 {name} {value};"))
 
-    FFmpeg crop w/h are changed through filter commands, then x/y are centered.
-    Unsupported effects remain metadata-only and are never translated into arbitrary filters.
+
+def _append_camera_whip_commands(
+    commands: list[tuple[float, str]],
+    *,
+    start: float,
+    duration: float,
+    intensity: float,
+    direction: str,
+) -> None:
+    """Approximate a fast camera whip with a short stepped zoomed crop pan.
+
+    The motion is intentionally brief and bounded. It never becomes a persistent
+    left/right virtual-camera oscillation and always resets to the stable 9:16
+    render after the hook window.
+    """
+    duration = max(0.18, min(0.50, duration))
+    zoom = 1.08 + 0.08 * max(0.0, min(1.0, intensity))
+    crop_w = _even(FRAME_WIDTH / zoom)
+    crop_h = _even(FRAME_HEIGHT / zoom)
+    max_x = max(0, FRAME_WIDTH - crop_w)
+    y = max(0, (FRAME_HEIGHT - crop_h) // 2)
+    reverse = str(direction or "left_to_right").lower() in {
+        "right_to_left", "rtl", "right-left", "left",
+    }
+
+    commands.append((start, f"{start:.3f} crop@v3 w {crop_w};"))
+    commands.append((start, f"{start:.3f} crop@v3 h {crop_h};"))
+    commands.append((start, f"{start:.3f} crop@v3 y {y};"))
+
+    steps = 6
+    for index in range(steps):
+        progress = index / (steps - 1)
+        if reverse:
+            progress = 1.0 - progress
+        x = int(round(max_x * progress))
+        timestamp = start + duration * (index / (steps - 1))
+        commands.append((timestamp, f"{timestamp:.3f} crop@v3 x {x};"))
+
+    _append_reset(commands, start + duration)
+
+
+def _write_visual_commands(plan: dict, clip_index: int) -> Path | None:
+    """Create FFmpeg sendcmd commands for safe semantic crop-based effects.
+
+    Standard semantic effects use centered punch-ins. Camera-whip visual hooks
+    use a short stepped horizontal crop travel and then return to the stable
+    frame. Unsupported effects remain metadata-only.
     """
     commands: list[tuple[float, str]] = []
     for raw in plan.get("visual_events") or []:
@@ -110,6 +156,25 @@ def _write_visual_commands(plan: dict, clip_index: int) -> Path | None:
         start = max(0.0, float(raw.get("time", 0.0) or 0.0))
         duration = max(0.10, min(1.50, float(raw.get("duration", 0.6) or 0.6)))
         intensity = max(0.0, min(1.0, float(raw.get("intensity", 0.5) or 0.5)))
+        metadata = raw.get("metadata") or {}
+        visual_hook_technique = str(
+            metadata.get("visual_hook_technique", "") or ""
+        ).lower()
+
+        if visual_hook_technique == "camera_whip":
+            _append_camera_whip_commands(
+                commands,
+                start=start,
+                duration=duration,
+                intensity=intensity,
+                direction=str(
+                    metadata.get("direction")
+                    or raw.get("target")
+                    or "left_to_right"
+                ),
+            )
+            continue
+
         zoom = 1.02 + 0.06 * intensity
         crop_w = _even(FRAME_WIDTH / zoom)
         crop_h = _even(FRAME_HEIGHT / zoom)
@@ -119,8 +184,7 @@ def _write_visual_commands(plan: dict, clip_index: int) -> Path | None:
 
         for name, value in (("w", crop_w), ("h", crop_h), ("x", x), ("y", y)):
             commands.append((start, f"{start:.3f} crop@v3 {name} {value};"))
-        for name, value in (("w", FRAME_WIDTH), ("h", FRAME_HEIGHT), ("x", 0), ("y", 0)):
-            commands.append((end, f"{end:.3f} crop@v3 {name} {value};"))
+        _append_reset(commands, end)
 
     if not commands:
         return None
