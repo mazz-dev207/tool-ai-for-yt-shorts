@@ -13,6 +13,7 @@ from src.renderer import escape_filter_path
 FRAME_WIDTH = 1080
 FRAME_HEIGHT = 1920
 EXECUTABLE_VISUAL_EFFECTS = {"punch_in", "face_zoom", "focus_crop"}
+DIALOGUE_DUCK_GAIN = 0.82
 
 
 def _run(command: list[str]) -> None:
@@ -150,12 +151,24 @@ def _video_filter(
     return ",".join(filters)
 
 
+def _dialogue_duck_expression(windows: list[tuple[float, float]]) -> str:
+    """Build a conservative output-time dialogue envelope around real SFX events."""
+    expression = "1"
+    for start, end in reversed(windows):
+        expression = (
+            f"if(between(t,{start:.3f},{end:.3f}),"
+            f"{DIALOGUE_DUCK_GAIN:.3f},{expression})"
+        )
+    return expression
+
+
 def _sound_inputs(plan: dict) -> tuple[list[str], str | None]:
     if not V3_ENABLE_SOUND_DESIGN:
         return [], None
     inputs: list[str] = []
     parts: list[str] = []
     labels: list[str] = []
+    duck_windows: list[tuple[float, float]] = []
     input_index = 1
     for raw in plan.get("audio_events") or []:
         asset = str(raw.get("asset", "") or "").strip()
@@ -168,6 +181,7 @@ def _sound_inputs(plan: dict) -> tuple[list[str], str | None]:
             warning(f"[SOUND] asset lipsă, omit: {path.name}")
             continue
         start = max(0.0, float(raw.get("time", 0.0) or 0.0))
+        duration = max(0.05, min(2.0, float(raw.get("duration", 0.35) or 0.35)))
         gain = min(-6.0, float(raw.get("gain_db", -12.0) or -12.0))
         delay = int(round(start * 1000))
         inputs.extend(["-i", str(path)])
@@ -176,12 +190,20 @@ def _sound_inputs(plan: dict) -> tuple[list[str], str | None]:
             f"[{input_index}:a]volume={gain}dB,adelay={delay}|{delay}[{label}]"
         )
         labels.append(f"[{label}]")
+        duck_windows.append((start, start + duration))
         input_index += 1
     if not labels:
         return inputs, None
+
+    # Duck dialogue only while a semantic SFX is active. The reduction is mild
+    # (~1.7 dB), so speech remains dominant. Final limiter prevents clipping.
+    duck_expression = _dialogue_duck_expression(duck_windows)
     parts.append(
-        f"[0:a]{''.join(labels)}amix=inputs={1 + len(labels)}:normalize=0,"
-        "alimiter=limit=0.95[aout]"
+        f"[0:a]volume='{duck_expression}':eval=frame[dialogue]"
+    )
+    parts.append(
+        f"[dialogue]{''.join(labels)}amix=inputs={1 + len(labels)}:"
+        "normalize=0:duration=longest,alimiter=limit=0.95[aout]"
     )
     return inputs, ";".join(parts)
 
