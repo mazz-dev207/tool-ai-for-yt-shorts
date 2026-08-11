@@ -1,0 +1,23 @@
+{
+  "name": "mazclips",
+  "hook_style": "specific_natural_high_information",
+  "caption_style": "existing_karaoke_with_selective_emphasis",
+  "zoom_behavior": "semantic_subtle",
+  "sound_design_intensity": "subtle",
+  "transition_behavior": "prefer_hard_cuts",
+  "context_overlay_style": "short_high_information",
+  "ending_behavior": "hard_cut_shortly_after_reaction",
+  "editing_density": "medium",
+  "principles": [
+    "intentional_over_hyperactive",
+    "preserve_semantic_truth",
+    "minimum_context_maximum_curiosity",
+    "protect_payoff_and_reaction"
+  ],
+  "content_profiles": {
+    "gaming": {"freeze_frames": "rare", "target_tracking": "strong", "cut_density": "medium"},
+    "podcast": {"visual_effects": "low", "hook_reconstruction": "high", "dialogue_priority": "high"},
+    "reaction": {"face_reactions": "preserve", "punch_ins": "useful", "reaction_cutoff": "late"},
+    "entertainment": {"context_overlays": "medium", "story_restructuring": "medium", "effects": "medium"}
+  }
+}
