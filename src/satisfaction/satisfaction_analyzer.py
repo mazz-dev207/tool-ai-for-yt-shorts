@@ -130,25 +130,37 @@ def _ending_candidates(raw: dict, allowed_values: list[float]) -> list[EndingCan
     return result[:6]
 
 
+def _ending_quality(item: EndingCandidate) -> float:
+    values = [
+        (item.payoff_score, 0.35),
+        (item.emotional_completeness_score, 0.25),
+        (item.ending_quality_score, 0.25),
+        (item.viewer_satisfaction_score, 0.15),
+    ]
+    available = [(float(value), weight) for value, weight in values if value is not None]
+    if not available:
+        return -1.0
+    total_weight = sum(weight for _value, weight in available)
+    return sum(value * weight for value, weight in available) / total_weight
+
+
 def _best_ending(candidates: list[EndingCandidate]) -> float | None:
     if not candidates:
         return None
+    winner = max(candidates, key=_ending_quality)
+    return winner.end if _ending_quality(winner) >= 0 else None
 
-    def score(item: EndingCandidate) -> float:
-        values = [
-            (item.payoff_score, 0.35),
-            (item.emotional_completeness_score, 0.25),
-            (item.ending_quality_score, 0.25),
-            (item.viewer_satisfaction_score, 0.15),
-        ]
-        available = [(float(value), weight) for value, weight in values if value is not None]
-        if not available:
-            return -1.0
-        total_weight = sum(weight for _value, weight in available)
-        return sum(value * weight for value, weight in available) / total_weight
 
-    winner = max(candidates, key=score)
-    return winner.end if score(winner) >= 0 else None
+def _selected_ending_candidate(
+    candidates: list[EndingCandidate],
+    recommended_end: float | None,
+) -> EndingCandidate | None:
+    if recommended_end is None:
+        return None
+    for item in candidates:
+        if abs(float(item.end) - float(recommended_end)) <= 0.05:
+            return item
+    return None
 
 
 def analyze_viewer_satisfaction(
@@ -189,6 +201,34 @@ def analyze_viewer_satisfaction(
     value_density_score = _bounded_score(raw.get("value_density_score"))
     ending_score = _bounded_score(raw.get("ending_quality_score"))
 
+    allowed_end_values = build_end_candidate_values(
+        float(clip.get("end", 0.0)),
+        float(context_end),
+        float(video_duration),
+    )
+    ending_candidates = _ending_candidates(raw, allowed_end_values)
+    recommended_end = raw.get("recommended_end")
+    try:
+        recommended_end = float(recommended_end) if recommended_end is not None else None
+    except (TypeError, ValueError):
+        recommended_end = None
+    if recommended_end is not None and allowed_end_values:
+        nearest = min(allowed_end_values, key=lambda value: abs(value - recommended_end))
+        recommended_end = nearest if abs(nearest - recommended_end) <= 0.12 else None
+    if recommended_end is None:
+        recommended_end = _best_ending(ending_candidates)
+
+    # If the recommended END explicitly improves completion, score the candidate
+    # that will actually be rendered rather than penalizing it with the old ending.
+    selected_ending = _selected_ending_candidate(ending_candidates, recommended_end)
+    if selected_ending is not None:
+        if selected_ending.payoff_score is not None:
+            payoff_score = selected_ending.payoff_score
+        if selected_ending.emotional_completeness_score is not None:
+            emotional_score = selected_ending.emotional_completeness_score
+        if selected_ending.ending_quality_score is not None:
+            ending_score = selected_ending.ending_quality_score
+
     calculated = calculate_satisfaction_score(
         profile=content_profile,
         payoff_score=payoff_score,
@@ -224,23 +264,8 @@ def analyze_viewer_satisfaction(
         "value_density": str(score_reasons.get("value_density_reason", "") or ""),
         "ending_quality": str(score_reasons.get("ending_quality_reason", "") or ""),
     }
-
-    allowed_end_values = build_end_candidate_values(
-        float(clip.get("end", 0.0)),
-        float(context_end),
-        float(video_duration),
-    )
-    ending_candidates = _ending_candidates(raw, allowed_end_values)
-    recommended_end = raw.get("recommended_end")
-    try:
-        recommended_end = float(recommended_end) if recommended_end is not None else None
-    except (TypeError, ValueError):
-        recommended_end = None
-    if recommended_end is not None and allowed_end_values:
-        nearest = min(allowed_end_values, key=lambda value: abs(value - recommended_end))
-        recommended_end = nearest if abs(nearest - recommended_end) <= 0.12 else None
-    if recommended_end is None:
-        recommended_end = _best_ending(ending_candidates)
+    if selected_ending is not None and selected_ending.reason:
+        reasons["selected_ending"] = selected_ending.reason
 
     result = SatisfactionResult(
         status=status,
