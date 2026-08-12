@@ -160,6 +160,16 @@ class ViewerSatisfactionV3Tests(unittest.TestCase):
             expectation_match_score=48,
             payoff={"strength": 35},
             risks={"weak_payoff": True, "clickbait_gap": True, "clickbait_gap_score": 58},
+            ending_candidates=[
+                {
+                    "end": 21.0,
+                    "payoff_score": 35,
+                    "emotional_completeness_score": 60,
+                    "ending_quality_score": 60,
+                    "viewer_satisfaction_score": 55,
+                    "reason": "The ending cannot repair the weak payoff.",
+                }
+            ],
         )
         result = analyze(raw)
         gate = evaluate_quality_gates(result)
@@ -192,6 +202,16 @@ class ViewerSatisfactionV3Tests(unittest.TestCase):
                 ending_quality_score=35,
                 emotional_completeness_score=52,
                 risks={"abrupt_ending": True},
+                ending_candidates=[
+                    {
+                        "end": 21.0,
+                        "payoff_score": 94,
+                        "emotional_completeness_score": 52,
+                        "ending_quality_score": 35,
+                        "viewer_satisfaction_score": 65,
+                        "reason": "No allowed ending candidate includes the missing resolution.",
+                    }
+                ],
             )
         )
         self.assertTrue(result.risks.abrupt_ending)
