@@ -19,6 +19,7 @@ FORCEABLE_VISUAL_HOOK_EFFECTS = {
     "focus_crop",
     "face_zoom",
 }
+VISUAL_HOOK_STRENGTHS = {"subtle", "medium", "strong"}
 DIALOGUE_DUCK_GAIN = 0.82
 RUNTIME_VISUAL_HOOK_MIN_SCORE = 95.0
 
@@ -77,31 +78,63 @@ def normalize_visual_hook_override(value: str | None) -> str:
     return normalized
 
 
-def _opening_visual_event(effect: str, clip_index: int) -> dict:
+def normalize_visual_hook_strength(value: str | None) -> str:
+    normalized = str(value or "medium").strip().lower()
+    if normalized not in VISUAL_HOOK_STRENGTHS:
+        allowed = ", ".join(sorted(VISUAL_HOOK_STRENGTHS))
+        raise ValueError(
+            f"Visual hook strength invalid: {value}. Allowed: {allowed}"
+        )
+    return normalized
+
+
+def _opening_visual_event(
+    effect: str,
+    clip_index: int,
+    strength: str = "medium",
+) -> dict:
     effect = normalize_visual_hook_override(effect)
+    strength = normalize_visual_hook_strength(strength)
     direction = "left_to_right" if clip_index % 2 else "right_to_left"
+
+    profiles = {
+        "subtle": {
+            "camera_whip": (0.72, 0.28, direction),
+            "punch_in": (0.68, 0.42, "center"),
+            "focus_crop": (0.64, 0.48, "center"),
+            "face_zoom": (0.68, 0.42, "face"),
+        },
+        "medium": {
+            "camera_whip": (0.95, 0.42, direction),
+            "punch_in": (0.95, 0.68, "center"),
+            "focus_crop": (0.90, 0.72, "center"),
+            "face_zoom": (0.95, 0.68, "face"),
+        },
+        "strong": {
+            "camera_whip": (1.00, 0.60, direction),
+            "punch_in": (1.00, 0.82, "center"),
+            "focus_crop": (1.00, 0.90, "center"),
+            "face_zoom": (1.00, 0.82, "face"),
+        },
+    }
+    intensity, duration, target = profiles[strength][effect]
 
     if effect == "camera_whip":
         return {
             "time": 0.0,
             "effect": "focus_crop",
-            "intensity": 0.95,
-            "duration": 0.42,
-            "target": direction,
+            "intensity": intensity,
+            "duration": duration,
+            "target": target,
             "metadata": {
                 "semantic_event": "visual_hook",
                 "visual_hook_technique": "camera_whip",
-                "direction": direction,
+                "direction": target,
+                "visual_hook_strength": strength,
                 "cli_forced": True,
             },
         }
 
-    defaults = {
-        "punch_in": (0.95, 0.68, "center"),
-        "focus_crop": (0.90, 0.72, "center"),
-        "face_zoom": (0.95, 0.68, "face"),
-    }
-    intensity, duration, target = defaults[effect]
     return {
         "time": 0.0,
         "effect": effect,
@@ -111,15 +144,22 @@ def _opening_visual_event(effect: str, clip_index: int) -> dict:
         "metadata": {
             "semantic_event": "visual_hook",
             "visual_hook_technique": effect,
+            "visual_hook_strength": strength,
             "cli_forced": True,
         },
     }
 
 
-def apply_cli_visual_hook_override(plan: dict, clip_index: int, override: str | None) -> bool:
+def apply_cli_visual_hook_override(
+    plan: dict,
+    clip_index: int,
+    override: str | None,
+    strength: str = "medium",
+) -> bool:
     effect = normalize_visual_hook_override(override)
     if effect == "auto":
         return False
+    strength = normalize_visual_hook_strength(strength)
 
     later_events = []
     for raw in plan.get("visual_events") or []:
@@ -127,10 +167,10 @@ def apply_cli_visual_hook_override(plan: dict, clip_index: int, override: str | 
             start = float(raw.get("time", 0.0) or 0.0)
         except (TypeError, ValueError):
             start = 0.0
-        if start > 0.80:
+        if start > 0.95:
             later_events.append(raw)
 
-    event = _opening_visual_event(effect, clip_index)
+    event = _opening_visual_event(effect, clip_index, strength)
     plan["visual_events"] = [event, *later_events]
 
     metadata = plan.get("metadata") or {}
@@ -138,6 +178,7 @@ def apply_cli_visual_hook_override(plan: dict, clip_index: int, override: str | 
         metadata = {}
         plan["metadata"] = metadata
     metadata["visual_hook_cli_override"] = effect
+    metadata["visual_hook_cli_strength"] = strength
     metadata["visual_hook_cli_forced_all"] = True
     metadata["visual_hook"] = {
         "technique": effect,
@@ -147,6 +188,7 @@ def apply_cli_visual_hook_override(plan: dict, clip_index: int, override: str | 
         "source_end": None,
         "apply_mode": "editorial_effect",
         "direction": event.get("target", "center"),
+        "strength": strength,
         "reason": "Forced from CLI for every Short in this run.",
         "inferred": False,
         "cli_forced": True,
@@ -154,7 +196,7 @@ def apply_cli_visual_hook_override(plan: dict, clip_index: int, override: str | 
     plan["no_transformation_needed"] = False
     info(
         f"[VISUAL HOOK][CLI FORCE] clip={clip_index} "
-        f"effect={effect} target={event.get('target', 'center')}"
+        f"effect={effect} strength={strength} target={event.get('target', 'center')}"
     )
     return True
 
@@ -197,6 +239,7 @@ def _ensure_runtime_visual_hook(plan: dict, clip_index: int) -> bool:
         "source_end": None,
         "apply_mode": "editorial_effect",
         "direction": direction,
+        "strength": "medium",
         "reason": (
             "Runtime quota fallback: strong gaming Hook score; apply the safe "
             "editorial camera-whip without inventing source actions."
@@ -214,6 +257,7 @@ def _ensure_runtime_visual_hook(plan: dict, clip_index: int) -> bool:
             "metadata": {
                 "semantic_event": "visual_hook",
                 "visual_hook_technique": "camera_whip",
+                "visual_hook_strength": "medium",
                 "direction": direction,
                 "fallback": True,
             },
@@ -367,20 +411,34 @@ def _write_visual_commands(plan: dict, clip_index: int) -> Path | None:
     return path
 
 
-def _effect_geometry(effect: str, intensity: float) -> tuple[int, int, str, str]:
+def _effect_geometry(
+    effect: str,
+    intensity: float,
+    strength: str = "medium",
+) -> tuple[int, int, str, str]:
     intensity = max(0.0, min(1.0, intensity))
+    strength = normalize_visual_hook_strength(strength)
+    strength_bonus = {
+        "subtle": -0.07,
+        "medium": 0.00,
+        "strong": 0.22,
+    }[strength]
+
     if effect == "face_zoom":
-        zoom = 1.24 + 0.10 * intensity
+        zoom = 1.24 + 0.10 * intensity + strength_bonus
         y_ratio = 0.12
     elif effect == "punch_in":
-        zoom = 1.18 + 0.10 * intensity
+        zoom = 1.18 + 0.10 * intensity + strength_bonus
         y_ratio = 0.50
     elif effect == "focus_crop":
-        zoom = 1.14 + 0.08 * intensity
+        zoom = 1.14 + 0.08 * intensity + strength_bonus
         y_ratio = 0.50
     else:
-        zoom = 1.22 + 0.08 * intensity
+        camera_bonus = 0.03 if strength == "subtle" else (0.25 if strength == "strong" else 0.0)
+        zoom = 1.22 + 0.08 * intensity + camera_bonus
         y_ratio = 0.50
+
+    zoom = max(1.05, zoom)
     scaled_w = _even(FRAME_WIDTH * zoom)
     scaled_h = _even(FRAME_HEIGHT * zoom)
     max_x = max(0, scaled_w - FRAME_WIDTH)
@@ -403,6 +461,9 @@ def _visual_event_filter_parts(plan: dict) -> tuple[list[str], str | None]:
         effect = str(raw.get("effect", "") or "").lower()
         metadata = raw.get("metadata") or {}
         technique = str(metadata.get("visual_hook_technique", "") or "").lower()
+        strength = normalize_visual_hook_strength(
+            metadata.get("visual_hook_strength", "medium")
+        )
         if effect not in EXECUTABLE_VISUAL_EFFECTS:
             continue
         try:
@@ -417,6 +478,7 @@ def _visual_event_filter_parts(plan: dict) -> tuple[list[str], str | None]:
         scaled_w, scaled_h, x_expr, y_expr = _effect_geometry(
             semantic_effect,
             intensity,
+            strength,
         )
 
         if semantic_effect == "camera_whip":
@@ -526,6 +588,7 @@ def post_process_v3(
     clip_index: int,
     rendered_path: Path,
     visual_hook_override: str = "auto",
+    visual_hook_strength: str = "medium",
 ) -> Path:
     plan = _load_plan(video_name, clip_index)
     if not plan:
@@ -538,6 +601,7 @@ def post_process_v3(
                 plan,
                 clip_index,
                 visual_hook_override,
+                visual_hook_strength,
             )
         else:
             changed = _ensure_runtime_visual_hook(plan, clip_index)
