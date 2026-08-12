@@ -6,6 +6,7 @@ from main import parse_args
 from src.editing.post_processor import (
     apply_cli_visual_hook_override,
     normalize_visual_hook_override,
+    normalize_visual_hook_strength,
 )
 
 
@@ -43,6 +44,7 @@ class VisualHookCliV3Tests(unittest.TestCase):
         ):
             args = parse_args()
         self.assertEqual(args.visual_hook, "camera-whip")
+        self.assertEqual(args.visual_hook_strength, "medium")
 
         with patch.object(
             sys,
@@ -51,6 +53,19 @@ class VisualHookCliV3Tests(unittest.TestCase):
         ):
             args = parse_args()
         self.assertEqual(args.visual_hook, "punch-in")
+
+    def test_cli_parser_accepts_visual_hook_strength(self):
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "main.py", "video2",
+                "--visual-hook", "camera-whip",
+                "--visual-hook-strength", "strong",
+            ],
+        ):
+            args = parse_args()
+        self.assertEqual(args.visual_hook_strength, "strong")
 
     def test_camera_whip_is_forced_even_for_low_score_non_gaming_plan(self):
         plan = self._plan()
@@ -62,6 +77,17 @@ class VisualHookCliV3Tests(unittest.TestCase):
         self.assertEqual(first["metadata"]["visual_hook_technique"], "camera_whip")
         self.assertTrue(first["metadata"]["cli_forced"])
         self.assertFalse(plan["no_transformation_needed"])
+
+    def test_strong_camera_whip_is_stronger_than_subtle(self):
+        subtle = self._plan()
+        strong = self._plan()
+        apply_cli_visual_hook_override(subtle, 1, "camera-whip", "subtle")
+        apply_cli_visual_hook_override(strong, 1, "camera-whip", "strong")
+        subtle_event = subtle["visual_events"][0]
+        strong_event = strong["visual_events"][0]
+        self.assertGreater(strong_event["duration"], subtle_event["duration"])
+        self.assertGreater(strong_event["intensity"], subtle_event["intensity"])
+        self.assertEqual(strong_event["metadata"]["visual_hook_strength"], "strong")
 
     def test_forced_override_replaces_opening_but_preserves_later_events(self):
         plan = self._plan()
@@ -79,6 +105,9 @@ class VisualHookCliV3Tests(unittest.TestCase):
         self.assertEqual(normalize_visual_hook_override("punch-in"), "punch_in")
         self.assertEqual(normalize_visual_hook_override("focus-crop"), "focus_crop")
         self.assertEqual(normalize_visual_hook_override("face-zoom"), "face_zoom")
+        self.assertEqual(normalize_visual_hook_strength("subtle"), "subtle")
+        self.assertEqual(normalize_visual_hook_strength("medium"), "medium")
+        self.assertEqual(normalize_visual_hook_strength("strong"), "strong")
 
     def test_punch_and_face_zoom_are_real_opening_events(self):
         for requested, expected in [
