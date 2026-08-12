@@ -13,6 +13,12 @@ from src.renderer import escape_filter_path
 FRAME_WIDTH = 1080
 FRAME_HEIGHT = 1920
 EXECUTABLE_VISUAL_EFFECTS = {"punch_in", "face_zoom", "focus_crop"}
+FORCEABLE_VISUAL_HOOK_EFFECTS = {
+    "camera_whip",
+    "punch_in",
+    "focus_crop",
+    "face_zoom",
+}
 DIALOGUE_DUCK_GAIN = 0.82
 RUNTIME_VISUAL_HOOK_MIN_SCORE = 95.0
 
@@ -54,7 +60,106 @@ def _save_plan(video_name: str, clip_index: int, plan: dict) -> None:
             encoding="utf-8",
         )
     except Exception as exc:
-        warning(f"[VISUAL HOOK] nu am putut persista runtime fallback: {exc}")
+        warning(f"[VISUAL HOOK] nu am putut persista runtime fallback/override: {exc}")
+
+
+def normalize_visual_hook_override(value: str | None) -> str:
+    normalized = str(value or "auto").strip().lower().replace("-", "_")
+    if normalized in {"", "auto"}:
+        return "auto"
+    if normalized not in FORCEABLE_VISUAL_HOOK_EFFECTS:
+        allowed = ", ".join(sorted(item.replace("_", "-") for item in FORCEABLE_VISUAL_HOOK_EFFECTS))
+        raise ValueError(f"Visual hook override invalid: {value}. Allowed: auto, {allowed}")
+    return normalized
+
+
+def _opening_visual_event(effect: str, clip_index: int) -> dict:
+    effect = normalize_visual_hook_override(effect)
+    direction = "left_to_right" if clip_index % 2 else "right_to_left"
+
+    if effect == "camera_whip":
+        return {
+            "time": 0.0,
+            "effect": "focus_crop",
+            "intensity": 0.82,
+            "duration": 0.34,
+            "target": direction,
+            "metadata": {
+                "semantic_event": "visual_hook",
+                "visual_hook_technique": "camera_whip",
+                "direction": direction,
+                "cli_forced": True,
+            },
+        }
+
+    defaults = {
+        "punch_in": (0.80, 0.55, "center"),
+        "focus_crop": (0.74, 0.60, "center"),
+        "face_zoom": (0.78, 0.55, "face"),
+    }
+    intensity, duration, target = defaults[effect]
+    return {
+        "time": 0.0,
+        "effect": effect,
+        "intensity": intensity,
+        "duration": duration,
+        "target": target,
+        "metadata": {
+            "semantic_event": "visual_hook",
+            "visual_hook_technique": effect,
+            "cli_forced": True,
+        },
+    }
+
+
+def apply_cli_visual_hook_override(plan: dict, clip_index: int, override: str | None) -> bool:
+    """Force one opening visual effect on every rendered Short.
+
+    The CLI override is intentionally post-edit and deterministic. It replaces
+    any competing effect in the first 0.55s, but preserves later semantic
+    effects. This makes --visual-hook reliable even when Gemini is unavailable
+    or the V3 planner selected no transformation.
+    """
+    effect = normalize_visual_hook_override(override)
+    if effect == "auto":
+        return False
+
+    later_events = []
+    for raw in plan.get("visual_events") or []:
+        try:
+            start = float(raw.get("time", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            start = 0.0
+        if start > 0.55:
+            later_events.append(raw)
+
+    event = _opening_visual_event(effect, clip_index)
+    plan["visual_events"] = [event, *later_events]
+
+    metadata = plan.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+        plan["metadata"] = metadata
+    metadata["visual_hook_cli_override"] = effect
+    metadata["visual_hook_cli_forced_all"] = True
+    metadata["visual_hook"] = {
+        "technique": effect,
+        "confidence": 1.0,
+        "source_supported": True,
+        "source_start": None,
+        "source_end": None,
+        "apply_mode": "editorial_effect",
+        "direction": event.get("target", "center"),
+        "reason": "Forced from CLI for every Short in this run.",
+        "inferred": False,
+        "cli_forced": True,
+    }
+    plan["no_transformation_needed"] = False
+    info(
+        f"[VISUAL HOOK][CLI FORCE] clip={clip_index} "
+        f"effect={effect} target={event.get('target', 'center')}"
+    )
+    return True
 
 
 def _ensure_runtime_visual_hook(plan: dict, clip_index: int) -> bool:
@@ -78,8 +183,6 @@ def _ensure_runtime_visual_hook(plan: dict, clip_index: int) -> bool:
     if profile != "gaming":
         return False
 
-    # Respect an explicit normal-path decision to use no visual hook. The
-    # runtime fallback exists for quota/legacy plans that skipped the planner.
     existing_visual_hook = metadata.get("visual_hook")
     fallback_reason = str(metadata.get("fallback_reason", "") or "")
     if isinstance(existing_visual_hook, dict) and not fallback_reason:
@@ -203,12 +306,6 @@ def _append_camera_whip_commands(
     intensity: float,
     direction: str,
 ) -> None:
-    """Approximate a fast camera whip with a short stepped zoomed crop pan.
-
-    The motion is intentionally brief and bounded. It never becomes a persistent
-    left/right virtual-camera oscillation and always resets to the stable 9:16
-    render after the hook window.
-    """
     duration = max(0.18, min(0.50, duration))
     zoom = 1.08 + 0.08 * max(0.0, min(1.0, intensity))
     crop_w = _even(FRAME_WIDTH / zoom)
@@ -236,12 +333,6 @@ def _append_camera_whip_commands(
 
 
 def _write_visual_commands(plan: dict, clip_index: int) -> Path | None:
-    """Create FFmpeg sendcmd commands for safe semantic crop-based effects.
-
-    Standard semantic effects use centered punch-ins. Camera-whip visual hooks
-    use a short stepped horizontal crop travel and then return to the stable
-    frame. Unsupported effects remain metadata-only.
-    """
     commands: list[tuple[float, str]] = []
     for raw in plan.get("visual_events") or []:
         effect = str(raw.get("effect", "")).lower()
@@ -310,7 +401,6 @@ def _video_filter(
 
 
 def _dialogue_duck_expression(windows: list[tuple[float, float]]) -> str:
-    """Build a conservative output-time dialogue envelope around real SFX events."""
     expression = "1"
     for start, end in reversed(windows):
         expression = (
@@ -353,8 +443,6 @@ def _sound_inputs(plan: dict) -> tuple[list[str], str | None]:
     if not labels:
         return inputs, None
 
-    # Duck dialogue only while a semantic SFX is active. The reduction is mild
-    # (~1.7 dB), so speech remains dominant. Final limiter prevents clipping.
     duck_expression = _dialogue_duck_expression(duck_windows)
     parts.append(
         f"[0:a]volume='{duck_expression}':eval=frame[dialogue]"
@@ -366,13 +454,29 @@ def _sound_inputs(plan: dict) -> tuple[list[str], str | None]:
     return inputs, ";".join(parts)
 
 
-def post_process_v3(*, video_name: str, clip_index: int, rendered_path: Path) -> Path:
+def post_process_v3(
+    *,
+    video_name: str,
+    clip_index: int,
+    rendered_path: Path,
+    visual_hook_override: str = "auto",
+) -> Path:
     plan = _load_plan(video_name, clip_index)
     if not plan:
         return rendered_path
 
-    if V3_ENABLE_SEMANTIC_EFFECTS and _ensure_runtime_visual_hook(plan, clip_index):
-        _save_plan(video_name, clip_index, plan)
+    changed = False
+    if V3_ENABLE_SEMANTIC_EFFECTS:
+        if normalize_visual_hook_override(visual_hook_override) != "auto":
+            changed = apply_cli_visual_hook_override(
+                plan,
+                clip_index,
+                visual_hook_override,
+            )
+        else:
+            changed = _ensure_runtime_visual_hook(plan, clip_index)
+        if changed:
+            _save_plan(video_name, clip_index, plan)
 
     overlay_ass = _write_overlay_ass(plan, clip_index)
     visual_commands = (
