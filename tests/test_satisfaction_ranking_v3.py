@@ -46,7 +46,7 @@ class SatisfactionRankingEdgeTests(unittest.TestCase):
 
         selected, rejected, mode = rank_satisfaction_records(records)
 
-        self.assertEqual(mode, "unavailable_candidates_preserved")
+        self.assertEqual(mode, "partial_satisfaction_preserve_upstream_order")
         self.assertEqual([item["original_index"] for item in selected], [2])
         self.assertEqual([item["original_index"] for item in rejected], [1])
 
