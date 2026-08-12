@@ -351,6 +351,20 @@ def apply_satisfaction_end_optimization(
 
     old_end = float(target.source_end)
     target.source_end = candidate_end
+    if candidate_end > old_end + 0.02:
+        selected_range = ProtectedRange(
+            start=max(float(target.source_start), old_end - 0.05),
+            end=candidate_end,
+            reason="satisfaction_selected_ending",
+        ).normalize()
+        if not any(
+            existing.reason == selected_range.reason
+            and abs(existing.start - selected_range.start) < 0.03
+            and abs(existing.end - selected_range.end) < 0.03
+            for existing in satisfaction.protected_ranges
+        ):
+            satisfaction.protected_ranges.append(selected_range)
+
     satisfaction.end_adjustment_applied = True
     satisfaction.end_adjustment_reason = (
         f"ending candidate {old_end:.3f}s -> {candidate_end:.3f}s selected for payoff/completion"
