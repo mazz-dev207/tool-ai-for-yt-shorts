@@ -20,6 +20,11 @@ _SOURCE_NATIVE_TECHNIQUES = {
     "object_interaction",
 }
 
+# Used only when the multimodal proposal does not provide enough visual-hook
+# evidence (for example quota/fallback). Keep this deliberately high so the
+# tool does not decorate every gaming clip with the same opening effect.
+_FALLBACK_GAMING_CAMERA_WHIP_MIN_HOOK_SCORE = 95.0
+
 
 def _text_blob(proposal: dict) -> str:
     values: list[str] = []
@@ -92,6 +97,50 @@ def _first_semantic_event(proposal: dict) -> dict | None:
     if not events:
         return None
     return min(events, key=lambda item: float(item.get("time", 9999.0) or 9999.0))
+
+
+def _hook_score(hook) -> float:
+    try:
+        return max(0.0, min(100.0, float(getattr(hook, "score", 0.0) or 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _fallback_camera_whip(hook, content_profile: str) -> dict | None:
+    """Conservative no-extra-AI fallback for very strong gaming openings.
+
+    This exists so a temporary Gemini quota/error does not silently disable the
+    entire Visual Hook Engine. It only creates the one technique that is a safe
+    editorial transform of existing pixels: camera_whip. Source-native actions
+    such as object interaction or unusual camera angles are never fabricated.
+    """
+    if str(content_profile or "").strip().lower() != "gaming":
+        return None
+    score = _hook_score(hook)
+    if score < _FALLBACK_GAMING_CAMERA_WHIP_MIN_HOOK_SCORE:
+        return None
+
+    try:
+        start = float(getattr(hook, "source_start", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        start = 0.0
+    direction = "left_to_right" if int(round(start * 10.0)) % 2 == 0 else "right_to_left"
+    confidence = min(0.78, 0.64 + (score - _FALLBACK_GAMING_CAMERA_WHIP_MIN_HOOK_SCORE) * 0.035)
+    return {
+        "technique": "camera_whip",
+        "confidence": confidence,
+        "source_supported": True,
+        "source_start": None,
+        "source_end": None,
+        "apply_mode": "editorial_effect",
+        "direction": direction,
+        "reason": (
+            "Deterministic fallback: very strong upstream gaming Hook score and "
+            "no stronger source-grounded visual-hook instruction was available."
+        ),
+        "inferred": True,
+        "fallback": True,
+    }
 
 
 def select_visual_hook(
@@ -218,6 +267,10 @@ def select_visual_hook(
                 "inferred": True,
             }
 
+    fallback = _fallback_camera_whip(hook, content_profile)
+    if fallback is not None:
+        return fallback
+
     return {
         "technique": "none",
         "confidence": 0.0,
@@ -300,5 +353,6 @@ def build_visual_hook_event(visual_hook: dict) -> VisualEvent | None:
             "semantic_event": "visual_hook",
             "visual_hook_technique": "camera_whip",
             "direction": direction,
+            "fallback": bool(visual_hook.get("fallback", False)),
         },
     )
