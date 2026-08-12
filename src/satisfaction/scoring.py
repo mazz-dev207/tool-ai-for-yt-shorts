@@ -250,9 +250,13 @@ def rank_satisfaction_records(records: list[dict]) -> tuple[list[dict], list[dic
         if getattr(record.get("gate"), "status", "") == "REJECT"
     ]
 
-    if passed:
+    # Never discard a candidate merely because Satisfaction was temporarily
+    # unavailable. PASS candidates can be ranked with it; unavailable candidates
+    # stay eligible using renormalized upstream scores.
+    if passed or unavailable:
         selected = sorted([*passed, *unavailable], key=_record_score, reverse=True)
-        return selected, rejected, "quality_gates"
+        mode = "quality_gates" if passed else "unavailable_candidates_preserved"
+        return selected, rejected, mode
 
     # All analyzed candidates failed. Keep the strongest few for review instead of
     # crashing or silently emitting nothing.
