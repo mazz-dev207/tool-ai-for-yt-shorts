@@ -68,8 +68,12 @@ def normalize_visual_hook_override(value: str | None) -> str:
     if normalized in {"", "auto"}:
         return "auto"
     if normalized not in FORCEABLE_VISUAL_HOOK_EFFECTS:
-        allowed = ", ".join(sorted(item.replace("_", "-") for item in FORCEABLE_VISUAL_HOOK_EFFECTS))
-        raise ValueError(f"Visual hook override invalid: {value}. Allowed: auto, {allowed}")
+        allowed = ", ".join(
+            sorted(item.replace("_", "-") for item in FORCEABLE_VISUAL_HOOK_EFFECTS)
+        )
+        raise ValueError(
+            f"Visual hook override invalid: {value}. Allowed: auto, {allowed}"
+        )
     return normalized
 
 
@@ -81,8 +85,8 @@ def _opening_visual_event(effect: str, clip_index: int) -> dict:
         return {
             "time": 0.0,
             "effect": "focus_crop",
-            "intensity": 0.82,
-            "duration": 0.34,
+            "intensity": 0.95,
+            "duration": 0.42,
             "target": direction,
             "metadata": {
                 "semantic_event": "visual_hook",
@@ -93,9 +97,9 @@ def _opening_visual_event(effect: str, clip_index: int) -> dict:
         }
 
     defaults = {
-        "punch_in": (0.80, 0.55, "center"),
-        "focus_crop": (0.74, 0.60, "center"),
-        "face_zoom": (0.78, 0.55, "face"),
+        "punch_in": (0.95, 0.68, "center"),
+        "focus_crop": (0.90, 0.72, "center"),
+        "face_zoom": (0.95, 0.68, "face"),
     }
     intensity, duration, target = defaults[effect]
     return {
@@ -113,13 +117,6 @@ def _opening_visual_event(effect: str, clip_index: int) -> dict:
 
 
 def apply_cli_visual_hook_override(plan: dict, clip_index: int, override: str | None) -> bool:
-    """Force one opening visual effect on every rendered Short.
-
-    The CLI override is intentionally post-edit and deterministic. It replaces
-    any competing effect in the first 0.55s, but preserves later semantic
-    effects. This makes --visual-hook reliable even when Gemini is unavailable
-    or the V3 planner selected no transformation.
-    """
     effect = normalize_visual_hook_override(override)
     if effect == "auto":
         return False
@@ -130,7 +127,7 @@ def apply_cli_visual_hook_override(plan: dict, clip_index: int, override: str | 
             start = float(raw.get("time", 0.0) or 0.0)
         except (TypeError, ValueError):
             start = 0.0
-        if start > 0.55:
+        if start > 0.80:
             later_events.append(raw)
 
     event = _opening_visual_event(effect, clip_index)
@@ -163,14 +160,6 @@ def apply_cli_visual_hook_override(plan: dict, clip_index: int, override: str | 
 
 
 def _ensure_runtime_visual_hook(plan: dict, clip_index: int) -> bool:
-    """Guarantee a conservative visual-hook path during Gemini fallback.
-
-    Normal V3 plans should already contain a visual event selected by the
-    Visual Hook Engine. Older/fallback plans can bypass build_edit_plan entirely
-    when Gemini quota is exhausted. For those plans only, a very strong gaming
-    Hook (>=95) may receive the safe editorial camera-whip effect. We never
-    fabricate source-native object/angle/action evidence here.
-    """
     if plan.get("visual_events"):
         return False
 
@@ -199,7 +188,10 @@ def _ensure_runtime_visual_hook(plan: dict, clip_index: int) -> bool:
     direction = "left_to_right" if clip_index % 2 else "right_to_left"
     visual_hook = {
         "technique": "camera_whip",
-        "confidence": min(0.78, 0.64 + (hook_score - RUNTIME_VISUAL_HOOK_MIN_SCORE) * 0.035),
+        "confidence": min(
+            0.78,
+            0.64 + (hook_score - RUNTIME_VISUAL_HOOK_MIN_SCORE) * 0.035,
+        ),
         "source_supported": True,
         "source_start": None,
         "source_end": None,
@@ -216,8 +208,8 @@ def _ensure_runtime_visual_hook(plan: dict, clip_index: int) -> bool:
         {
             "time": 0.0,
             "effect": "focus_crop",
-            "intensity": 0.82,
-            "duration": 0.34,
+            "intensity": 0.95,
+            "duration": 0.42,
             "target": direction,
             "metadata": {
                 "semantic_event": "visual_hook",
@@ -293,6 +285,8 @@ def _even(value: float) -> int:
     return parsed if parsed % 2 == 0 else parsed - 1
 
 
+# Legacy writer kept only for backward-compatible unit/debug tooling.
+# Production rendering below no longer depends on sendcmd.
 def _append_reset(commands: list[tuple[float, str]], end: float) -> None:
     for name, value in (("w", FRAME_WIDTH), ("h", FRAME_HEIGHT), ("x", 0), ("y", 0)):
         commands.append((end, f"{end:.3f} crop@v3 {name} {value};"))
@@ -315,11 +309,9 @@ def _append_camera_whip_commands(
     reverse = str(direction or "left_to_right").lower() in {
         "right_to_left", "rtl", "right-left", "left",
     }
-
     commands.append((start, f"{start:.3f} crop@v3 w {crop_w};"))
     commands.append((start, f"{start:.3f} crop@v3 h {crop_h};"))
     commands.append((start, f"{start:.3f} crop@v3 y {y};"))
-
     steps = 6
     for index in range(steps):
         progress = index / (steps - 1)
@@ -328,7 +320,6 @@ def _append_camera_whip_commands(
         x = int(round(max_x * progress))
         timestamp = start + duration * (index / (steps - 1))
         commands.append((timestamp, f"{timestamp:.3f} crop@v3 x {x};"))
-
     _append_reset(commands, start + duration)
 
 
@@ -345,7 +336,6 @@ def _write_visual_commands(plan: dict, clip_index: int) -> Path | None:
         visual_hook_technique = str(
             metadata.get("visual_hook_technique", "") or ""
         ).lower()
-
         if visual_hook_technique == "camera_whip":
             _append_camera_whip_commands(
                 commands,
@@ -359,18 +349,15 @@ def _write_visual_commands(plan: dict, clip_index: int) -> Path | None:
                 ),
             )
             continue
-
         zoom = 1.02 + 0.06 * intensity
         crop_w = _even(FRAME_WIDTH / zoom)
         crop_h = _even(FRAME_HEIGHT / zoom)
         x = max(0, (FRAME_WIDTH - crop_w) // 2)
         y = max(0, (FRAME_HEIGHT - crop_h) // 2)
         end = start + duration
-
         for name, value in (("w", crop_w), ("h", crop_h), ("x", x), ("y", y)):
             commands.append((start, f"{start:.3f} crop@v3 {name} {value};"))
         _append_reset(commands, end)
-
     if not commands:
         return None
     commands.sort(key=lambda item: item[0])
@@ -380,24 +367,105 @@ def _write_visual_commands(plan: dict, clip_index: int) -> Path | None:
     return path
 
 
-def _video_filter(
+def _effect_geometry(effect: str, intensity: float) -> tuple[int, int, str, str]:
+    intensity = max(0.0, min(1.0, intensity))
+    if effect == "face_zoom":
+        zoom = 1.24 + 0.10 * intensity
+        y_ratio = 0.12
+    elif effect == "punch_in":
+        zoom = 1.18 + 0.10 * intensity
+        y_ratio = 0.50
+    elif effect == "focus_crop":
+        zoom = 1.14 + 0.08 * intensity
+        y_ratio = 0.50
+    else:
+        zoom = 1.22 + 0.08 * intensity
+        y_ratio = 0.50
+    scaled_w = _even(FRAME_WIDTH * zoom)
+    scaled_h = _even(FRAME_HEIGHT * zoom)
+    max_x = max(0, scaled_w - FRAME_WIDTH)
+    max_y = max(0, scaled_h - FRAME_HEIGHT)
+    return scaled_w, scaled_h, str(max_x // 2), str(int(round(max_y * y_ratio)))
+
+
+def _visual_event_filter_parts(plan: dict) -> tuple[list[str], str | None]:
+    """Build actual pixel transforms using split/scale/crop/overlay.
+
+    Every effect creates a zoomed branch and overlays it only inside the
+    requested time window. Outside that interval the untouched base image is
+    shown, so reset behavior is deterministic and does not depend on sendcmd.
+    """
+    parts: list[str] = []
+    current_label = "0:v"
+    event_index = 0
+
+    for raw in plan.get("visual_events") or []:
+        effect = str(raw.get("effect", "") or "").lower()
+        metadata = raw.get("metadata") or {}
+        technique = str(metadata.get("visual_hook_technique", "") or "").lower()
+        if effect not in EXECUTABLE_VISUAL_EFFECTS:
+            continue
+        try:
+            start = max(0.0, float(raw.get("time", 0.0) or 0.0))
+            duration = max(0.12, min(1.50, float(raw.get("duration", 0.6) or 0.6)))
+            intensity = max(0.0, min(1.0, float(raw.get("intensity", 0.5) or 0.5)))
+        except (TypeError, ValueError):
+            continue
+        end = start + duration
+
+        semantic_effect = "camera_whip" if technique == "camera_whip" else effect
+        scaled_w, scaled_h, x_expr, y_expr = _effect_geometry(
+            semantic_effect,
+            intensity,
+        )
+
+        if semantic_effect == "camera_whip":
+            max_x = max(0, scaled_w - FRAME_WIDTH)
+            direction = str(
+                metadata.get("direction")
+                or raw.get("target")
+                or "left_to_right"
+            ).lower()
+            progress = f"max(0,min(1,(t-{start:.3f})/{duration:.3f}))"
+            if direction in {"right_to_left", "rtl", "right-left", "left"}:
+                x_expr = f"{max_x}*(1-{progress})"
+            else:
+                x_expr = f"{max_x}*{progress}"
+
+        base = f"vh{event_index}base"
+        fx = f"vh{event_index}fx"
+        cropped = f"vh{event_index}crop"
+        out = f"vh{event_index}out"
+        parts.append(f"[{current_label}]split=2[{base}][{fx}]")
+        parts.append(
+            f"[{fx}]scale={scaled_w}:{scaled_h},"
+            f"crop={FRAME_WIDTH}:{FRAME_HEIGHT}:x='{x_expr}':y='{y_expr}'[{cropped}]"
+        )
+        parts.append(
+            f"[{base}][{cropped}]overlay=0:0:"
+            f"enable='between(t,{start:.3f},{end:.3f})'[{out}]"
+        )
+        current_label = out
+        event_index += 1
+
+    return parts, current_label if event_index else None
+
+
+def _build_video_filtergraph(
     plan: dict,
     overlay_ass: Path | None,
-    visual_commands: Path | None,
-) -> str:
-    filters: list[str] = []
-    if visual_commands is not None:
-        command_path = escape_filter_path(visual_commands)
-        filters.extend(
-            [
-                f"sendcmd=f='{command_path}'",
-                f"crop@v3=w={FRAME_WIDTH}:h={FRAME_HEIGHT}:x=0:y=0",
-                f"scale={FRAME_WIDTH}:{FRAME_HEIGHT}",
-            ]
-        )
+) -> tuple[str | None, str | None]:
+    parts, current_label = _visual_event_filter_parts(plan)
+
     if overlay_ass is not None:
-        filters.append(f"subtitles='{escape_filter_path(overlay_ass)}'")
-    return ",".join(filters)
+        source = current_label or "0:v"
+        overlay_path = escape_filter_path(overlay_ass)
+        parts.append(f"[{source}]subtitles='{overlay_path}'[vout]")
+        current_label = "vout"
+
+    if not parts or current_label is None:
+        return None, None
+    return ";".join(parts), current_label
 
 
 def _dialogue_duck_expression(windows: list[tuple[float, float]]) -> str:
@@ -444,9 +512,7 @@ def _sound_inputs(plan: dict) -> tuple[list[str], str | None]:
         return inputs, None
 
     duck_expression = _dialogue_duck_expression(duck_windows)
-    parts.append(
-        f"[0:a]volume='{duck_expression}':eval=frame[dialogue]"
-    )
+    parts.append(f"[0:a]volume='{duck_expression}':eval=frame[dialogue]")
     parts.append(
         f"[dialogue]{''.join(labels)}amix=inputs={1 + len(labels)}:"
         "normalize=0:duration=longest,alimiter=limit=0.95[aout]"
@@ -479,24 +545,34 @@ def post_process_v3(
             _save_plan(video_name, clip_index, plan)
 
     overlay_ass = _write_overlay_ass(plan, clip_index)
-    visual_commands = (
-        _write_visual_commands(plan, clip_index) if V3_ENABLE_SEMANTIC_EFFECTS else None
+    video_graph, video_label = (
+        _build_video_filtergraph(plan, overlay_ass)
+        if V3_ENABLE_SEMANTIC_EFFECTS or overlay_ass is not None
+        else (None, None)
     )
-    vf = _video_filter(plan, overlay_ass, visual_commands)
-    sound_inputs, audio_filter = _sound_inputs(plan)
-    if not vf and not audio_filter:
+    sound_inputs, audio_graph = _sound_inputs(plan)
+
+    if not video_graph and not audio_graph:
         return rendered_path
 
     temp = TEMP_DIR / f"{rendered_path.stem}_v3.mp4"
     command = ["ffmpeg", "-y", "-i", str(rendered_path), *sound_inputs]
-    if audio_filter:
-        if vf:
-            command.extend(["-vf", vf])
-        command.extend(
-            ["-filter_complex", audio_filter, "-map", "0:v:0", "-map", "[aout]"]
-        )
-    elif vf:
-        command.extend(["-vf", vf, "-map", "0:v:0", "-map", "0:a?"])
+    graph_parts = []
+    if video_graph:
+        graph_parts.append(video_graph)
+    if audio_graph:
+        graph_parts.append(audio_graph)
+    command.extend(["-filter_complex", ";".join(graph_parts)])
+
+    if video_label:
+        command.extend(["-map", f"[{video_label}]"])
+    else:
+        command.extend(["-map", "0:v:0"])
+    if audio_graph:
+        command.extend(["-map", "[aout]"])
+    else:
+        command.extend(["-map", "0:a?"])
+
     command.extend(
         [
             "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "19",
@@ -506,6 +582,11 @@ def post_process_v3(
     try:
         _run(command)
         temp.replace(rendered_path)
+        if plan.get("visual_events"):
+            info(
+                f"[EDIT] pixel visual effects rendered for clip_{clip_index}: "
+                f"events={len(plan.get('visual_events') or [])}"
+            )
         info(f"[EDIT] semantic post-process applied to {rendered_path.name}")
     except Exception as exc:
         warning(f"[EDIT] semantic post-process failed: {exc}; păstrez render-ul V2.")
