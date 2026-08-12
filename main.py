@@ -202,6 +202,15 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--visual-hook-strength",
+        choices=["subtle", "medium", "strong"],
+        default="medium",
+        help=(
+            "Intensitatea efectului forțat: subtle, medium sau strong. "
+            "Se aplică atunci când --visual-hook nu este auto."
+        ),
+    )
+    parser.add_argument(
         "--resume-from",
         choices=["v3"],
         default=None,
@@ -253,7 +262,8 @@ def main():
 
     if forced_visual_hook:
         info(
-            f"[VISUAL HOOK][CLI] Force all Shorts: effect={args.visual_hook}"
+            f"[VISUAL HOOK][CLI] Force all Shorts: effect={args.visual_hook} "
+            f"strength={args.visual_hook_strength}"
         )
 
     _validate_resume_prerequisites(video_name, resume_from)
@@ -380,7 +390,7 @@ def main():
     if forced_visual_hook:
         info(
             f"[VISUAL HOOK][CLI] Rebuild forced so effect={args.visual_hook} "
-            "is applied to every final Short."
+            f"strength={args.visual_hook_strength} is applied to every final Short."
         )
 
     if v3_requested and not v3_execute:
@@ -447,6 +457,7 @@ def main():
                     clip_index=index,
                     rendered_path=Path(output),
                     visual_hook_override=args.visual_hook,
+                    visual_hook_strength=args.visual_hook_strength,
                 )
             timings["semantic_post"] = time.time() - started
         else:
@@ -486,7 +497,10 @@ def main():
     if resume_from:
         print(f"Resume mode: {resume_from}")
     if forced_visual_hook:
-        print(f"Visual hook forced on all Shorts: {args.visual_hook}")
+        print(
+            f"Visual hook forced on all Shorts: {args.visual_hook} "
+            f"(strength={args.visual_hook_strength})"
+        )
     print()
     print("--- TIMPI PIPELINE ---")
     for key in [
