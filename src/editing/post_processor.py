@@ -14,6 +14,7 @@ FRAME_WIDTH = 1080
 FRAME_HEIGHT = 1920
 EXECUTABLE_VISUAL_EFFECTS = {"punch_in", "face_zoom", "focus_crop"}
 DIALOGUE_DUCK_GAIN = 0.82
+RUNTIME_VISUAL_HOOK_MIN_SCORE = 95.0
 
 
 def _run(command: list[str]) -> None:
@@ -29,8 +30,12 @@ def _run(command: list[str]) -> None:
         raise RuntimeError(result.stderr.strip() or "V3 post-process failed")
 
 
+def _plan_path(video_name: str, clip_index: int) -> Path:
+    return HIGHLIGHTS_DIR / "v3" / video_name / f"clip_{clip_index}" / "edit_plan.json"
+
+
 def _load_plan(video_name: str, clip_index: int) -> dict | None:
-    path = HIGHLIGHTS_DIR / "v3" / video_name / f"clip_{clip_index}" / "edit_plan.json"
+    path = _plan_path(video_name, clip_index)
     if not path.exists():
         return None
     try:
@@ -38,6 +43,95 @@ def _load_plan(video_name: str, clip_index: int) -> dict | None:
         return value if isinstance(value, dict) else None
     except Exception:
         return None
+
+
+def _save_plan(video_name: str, clip_index: int, plan: dict) -> None:
+    path = _plan_path(video_name, clip_index)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(plan, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        warning(f"[VISUAL HOOK] nu am putut persista runtime fallback: {exc}")
+
+
+def _ensure_runtime_visual_hook(plan: dict, clip_index: int) -> bool:
+    """Guarantee a conservative visual-hook path during Gemini fallback.
+
+    Normal V3 plans should already contain a visual event selected by the
+    Visual Hook Engine. Older/fallback plans can bypass build_edit_plan entirely
+    when Gemini quota is exhausted. For those plans only, a very strong gaming
+    Hook (>=95) may receive the safe editorial camera-whip effect. We never
+    fabricate source-native object/angle/action evidence here.
+    """
+    if plan.get("visual_events"):
+        return False
+
+    metadata = plan.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+        plan["metadata"] = metadata
+
+    profile = str(metadata.get("content_profile", "") or "").strip().lower()
+    if profile != "gaming":
+        return False
+
+    # Respect an explicit normal-path decision to use no visual hook. The
+    # runtime fallback exists for quota/legacy plans that skipped the planner.
+    existing_visual_hook = metadata.get("visual_hook")
+    fallback_reason = str(metadata.get("fallback_reason", "") or "")
+    if isinstance(existing_visual_hook, dict) and not fallback_reason:
+        return False
+
+    hook = plan.get("hook") or {}
+    try:
+        hook_score = float(hook.get("score", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        hook_score = 0.0
+    if hook_score < RUNTIME_VISUAL_HOOK_MIN_SCORE:
+        return False
+
+    direction = "left_to_right" if clip_index % 2 else "right_to_left"
+    visual_hook = {
+        "technique": "camera_whip",
+        "confidence": min(0.78, 0.64 + (hook_score - RUNTIME_VISUAL_HOOK_MIN_SCORE) * 0.035),
+        "source_supported": True,
+        "source_start": None,
+        "source_end": None,
+        "apply_mode": "editorial_effect",
+        "direction": direction,
+        "reason": (
+            "Runtime quota fallback: strong gaming Hook score; apply the safe "
+            "editorial camera-whip without inventing source actions."
+        ),
+        "inferred": True,
+        "fallback": True,
+    }
+    plan["visual_events"] = [
+        {
+            "time": 0.0,
+            "effect": "focus_crop",
+            "intensity": 0.82,
+            "duration": 0.34,
+            "target": direction,
+            "metadata": {
+                "semantic_event": "visual_hook",
+                "visual_hook_technique": "camera_whip",
+                "direction": direction,
+                "fallback": True,
+            },
+        }
+    ]
+    metadata["visual_hook"] = visual_hook
+    metadata["visual_hook_runtime_fallback"] = True
+    plan["no_transformation_needed"] = False
+    info(
+        f"[VISUAL HOOK][RUNTIME FALLBACK] clip={clip_index} "
+        f"technique=camera_whip hook_score={hook_score:.0f} direction={direction}"
+    )
+    return True
 
 
 def _ass_time(value: float) -> str:
@@ -276,6 +370,9 @@ def post_process_v3(*, video_name: str, clip_index: int, rendered_path: Path) ->
     plan = _load_plan(video_name, clip_index)
     if not plan:
         return rendered_path
+
+    if V3_ENABLE_SEMANTIC_EFFECTS and _ensure_runtime_visual_hook(plan, clip_index):
+        _save_plan(video_name, clip_index, plan)
 
     overlay_ass = _write_overlay_ass(plan, clip_index)
     visual_commands = (
