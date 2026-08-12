@@ -8,6 +8,7 @@ from src.editing.visual_hooks import (
     select_visual_hook,
 )
 from src.hooks.v3 import filter_truthful_overlays
+from src.logger import info
 from src.v3.models import ContextOverlay, EditPlan, TimelineSegment
 from src.v3_config import V3_ENABLE_VISUAL_HOOK_ENGINE, load_editorial_profile
 
@@ -124,6 +125,13 @@ def build_edit_plan(
             timeline,
             visual_hook,
         )
+        if visual_hook.get("technique") != "none":
+            info(
+                f"[VISUAL HOOK] clip={clip_index} technique={visual_hook['technique']} "
+                f"confidence={float(visual_hook.get('confidence', 0.0)):.2f} "
+                f"mode={visual_hook.get('apply_mode', 'none')} "
+                f"timeline_changed={visual_hook_timeline_changed}"
+            )
 
     effective_no_transformation = bool(no_transformation_needed)
     if visual_hook_timeline_changed:
