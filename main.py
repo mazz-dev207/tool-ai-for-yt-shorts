@@ -34,6 +34,7 @@ from src.editing.smartcut_v3 import cut_v3
 from src.caption_engine import CaptionEngine
 from src.renderer import render
 from src.editing.post_processor import post_process_v3
+from src.satisfaction.final_validator import validate_final_outputs
 from src.strategy.experiments import export_experiment_metadata
 
 
@@ -338,7 +339,9 @@ def main():
             _save_pre_v3_checkpoint(video_name)
 
     if v3_requested:
-        info("8/11 V3 Editorial Angle + Story + Originality + EditPlan...")
+        info(
+            "8/11 V3 Editorial + Story + Originality + Viewer Satisfaction + Final Ranking..."
+        )
         _, timings["v3_editorial"] = timed_step(
             run_v3_editorial_stage,
             video_name,
@@ -372,6 +375,7 @@ def main():
         timings["captions"] = 0.0
         timings["render"] = 0.0
         timings["semantic_post"] = 0.0
+        timings["satisfaction_validation"] = 0.0
         clips = _existing_final_outputs()
     else:
         if resume_from == "v3":
@@ -425,6 +429,16 @@ def main():
             info("[V3] Semantic effects neutilizate.")
             timings["semantic_post"] = 0.0
 
+        if v3_requested:
+            _, timings["satisfaction_validation"] = timed_step(
+                validate_final_outputs,
+                video_name,
+                [Path(output) for output in rendered_outputs],
+                args.content_profile,
+            )
+        else:
+            timings["satisfaction_validation"] = 0.0
+
     if v3_requested:
         export_experiment_metadata(video_name)
 
@@ -463,6 +477,7 @@ def main():
         "captions",
         "render",
         "semantic_post",
+        "satisfaction_validation",
     ]:
         print(f"{key:20s}: {timings.get(key, 0.0):8.2f}s")
     print(f"{'TOTAL':20s}: {total_elapsed:8.2f}s")
