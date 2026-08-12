@@ -43,11 +43,7 @@ def _save(path: Path, payload) -> None:
 
 
 def _refinement_bounds(role: str) -> tuple[float, float]:
-    """Maximum allowed movement outside the AI-authored source range.
-
-    The V2 SmartCut engine remains useful for speech boundaries, but V3 Story/EditPlan
-    is authoritative. In particular, cold opens must not grow into the full payoff.
-    """
+    """Maximum allowed movement outside the AI-authored source range."""
     role = str(role or "context").lower()
     if role in {"cold_open", "hook", "replay", "callback"}:
         return 0.12, 0.18
@@ -58,6 +54,60 @@ def _refinement_bounds(role: str) -> tuple[float, float]:
     return 0.18, 0.18
 
 
+def _normalize_protected_ranges(raw_ranges: list[dict], video_duration: float) -> list[dict]:
+    result: list[dict] = []
+    for raw in raw_ranges or []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            start = max(0.0, float(raw.get("start")))
+            end = min(float(video_duration), float(raw.get("end")))
+        except (TypeError, ValueError):
+            continue
+        if end <= start + 0.03:
+            continue
+        result.append(
+            {
+                "start": start,
+                "end": end,
+                "reason": str(raw.get("reason", "viewer_satisfaction") or "viewer_satisfaction"),
+            }
+        )
+    return result
+
+
+def _protect_refined_segment(
+    *,
+    rough_start: float,
+    rough_end: float,
+    refined_start: float,
+    refined_end: float,
+    protected_ranges: list[dict],
+    video_duration: float,
+) -> tuple[float, float, list[str]]:
+    """Keep source-grounded tension/comedy/reaction beats inside a V3 segment.
+
+    Only ranges that overlap the AI-authored rough segment are protected. SmartCut
+    can still remove real dead air elsewhere.
+    """
+    start = float(refined_start)
+    end = float(refined_end)
+    reasons: list[str] = []
+    for item in protected_ranges:
+        protected_start = float(item["start"])
+        protected_end = float(item["end"])
+        overlap = min(rough_end, protected_end) - max(rough_start, protected_start)
+        if overlap <= 0.02:
+            continue
+        if start > protected_start:
+            start = max(0.0, min(start, protected_start))
+            reasons.append(str(item.get("reason", "protected_start")))
+        if end < protected_end:
+            end = min(float(video_duration), max(end, protected_end))
+            reasons.append(str(item.get("reason", "protected_end")))
+    return start, end, sorted(set(reasons))
+
+
 def _refine_segment(
     *,
     video_name: str,
@@ -66,12 +116,14 @@ def _refine_segment(
     segment: dict,
     transcript: list[dict],
     video_duration: float,
+    protected_ranges: list[dict] | None = None,
 ) -> dict:
     rough_start = float(segment["start"])
     rough_end = float(segment["end"])
     rough = {"start": rough_start, "end": rough_end}
     role = str(segment.get("role") or "context")
     before_limit, after_limit = _refinement_bounds(role)
+    protected_ranges = list(protected_ranges or [])
 
     try:
         refined = refine_edit_plan(
@@ -94,7 +146,20 @@ def _refine_segment(
                 rough_end + after_limit,
                 max(candidate_end, bounded_start + 0.05),
             )
+            bounded_start, bounded_end, protected_reasons = _protect_refined_segment(
+                rough_start=rough_start,
+                rough_end=rough_end,
+                refined_start=bounded_start,
+                refined_end=bounded_end,
+                protected_ranges=protected_ranges,
+                video_duration=video_duration,
+            )
             if bounded_end > bounded_start + 0.049:
+                if protected_reasons:
+                    info(
+                        f"[SMARTCUT3][SATISFACTION] protected {role} beat(s): "
+                        f"{', '.join(protected_reasons)}"
+                    )
                 if (
                     abs(bounded_start - candidate_start) > 0.01
                     or abs(bounded_end - candidate_end) > 0.01
@@ -190,6 +255,11 @@ def cut_v3(video_name: str) -> Path:
                 "role": "context",
             }
         ]
+        satisfaction = clip.get("satisfaction") if isinstance(clip.get("satisfaction"), dict) else {}
+        protected_ranges = _normalize_protected_ranges(
+            satisfaction.get("protected_ranges", []) or [],
+            duration,
+        )
         refined = []
         for segment_index, segment in enumerate(raw_segments, start=1):
             item = {
@@ -209,6 +279,7 @@ def cut_v3(video_name: str) -> Path:
                     segment=item,
                     transcript=transcript,
                     video_duration=duration,
+                    protected_ranges=protected_ranges,
                 )
             )
 
