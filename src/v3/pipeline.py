@@ -19,6 +19,7 @@ from src.v3_config import (
     V3_MAX_EDIT_PLAN_RETRIES,
     V3_MAX_EFFECTS_PER_EVENT,
     V3_ORIGINALITY_MIN_SCORE,
+    V3_SATISFACTION_DEBUG,
 )
 from src.editing.originality_qa import run_originality_qa
 from src.editing.planner import build_edit_plan
@@ -34,6 +35,15 @@ from src.originality.analyzer import analyze_originality
 from src.originality.angle_generator import generate_angle
 from src.originality.scoring import score_edit_plan
 from src.originality.transformation_plan import choose_transformations
+from src.satisfaction.satisfaction_analyzer import (
+    analyze_viewer_satisfaction,
+    apply_satisfaction_end_optimization,
+)
+from src.satisfaction.scoring import (
+    calculate_final_short_score,
+    evaluate_quality_gates,
+    rank_satisfaction_records,
+)
 from src.story.restructurer import restructure_story
 from src.v3.editorial_reasoner import GeminiEditorialReasoner
 from src.v3.models import (
@@ -135,6 +145,11 @@ def _attach_plan_to_clip(
     plan: EditPlan,
     originality: OriginalityResult,
     qa: OriginalityQAReport,
+    satisfaction,
+    gate,
+    final_score,
+    *,
+    satisfaction_ranking_changed: bool,
 ) -> None:
     clip["segments"] = [
         {
@@ -145,14 +160,15 @@ def _attach_plan_to_clip(
         for item in plan.timeline
     ]
     if clip["segments"]:
-        # For editorial timelines start/end describe the first/last played source
-        # ranges. Caption and cut execution use the explicit ordered segments.
         clip["start"] = clip["segments"][0]["start"]
         clip["end"] = clip["segments"][-1]["end"]
         clip["duration"] = round(
             sum(item["end"] - item["start"] for item in clip["segments"]),
             3,
         )
+    clip["satisfaction"] = satisfaction.to_dict()
+    clip["quality_gate"] = gate.to_dict()
+    clip["final_score"] = final_score.to_dict()
     clip["v3"] = {
         "editorial_angle": plan.editorial_angle,
         "viewer_question": plan.viewer_question,
@@ -161,8 +177,15 @@ def _attach_plan_to_clip(
         "hook_mode": plan.hook.mode,
         "hook_score_v3": plan.hook.score,
         "originality_score": originality.originality_score,
+        "viewer_satisfaction_score": satisfaction.viewer_satisfaction_score,
+        "payoff_score": satisfaction.payoff_score,
+        "context_independence_score": satisfaction.context_independence_score,
+        "satisfaction_status": satisfaction.status,
+        "quality_gate": gate.status,
+        "final_score": final_score.score,
         "qa_passed": qa.passed,
         "no_transformation_needed": plan.no_transformation_needed,
+        "satisfaction_ranking_changed": satisfaction_ranking_changed,
     }
 
 
@@ -170,6 +193,153 @@ def _debug_dir(video_name: str, clip_index: int) -> Path:
     path = OUTPUT_DIR / "debug" / video_name / f"clip_{clip_index}"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _hook_score(clip: dict, plan: EditPlan) -> float:
+    for value in (
+        plan.hook.score,
+        clip.get("hook_score"),
+        clip.get("base_hook_score"),
+        (clip.get("scores") or {}).get("hook"),
+    ):
+        try:
+            if value is not None:
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _retention_score(clip: dict) -> float:
+    for value in (
+        clip.get("retention_score"),
+        (clip.get("scores") or {}).get("retention"),
+    ):
+        try:
+            if value is not None:
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _satisfaction_requires_smartcut(satisfaction) -> bool:
+    for item in satisfaction.protected_ranges:
+        reason = str(item.reason or "").lower()
+        if not reason.startswith("semantic_"):
+            return True
+    return False
+
+
+def _candidate_key(record: dict) -> tuple[int, int, float, int]:
+    qa = record["qa"]
+    gate = record["gate"]
+    final_score = record["final_score"].score
+    return (
+        1 if qa.passed else 0,
+        1 if gate.status in {"PASS", "UNAVAILABLE_FALLBACK"} else 0,
+        float(final_score) if final_score is not None else -1.0,
+        int(record["originality"].originality_score),
+    )
+
+
+def _build_attempt_record(
+    *,
+    clip: dict,
+    plan: EditPlan,
+    originality: OriginalityResult,
+    qa: OriginalityQAReport,
+    proposal: dict,
+    satisfaction,
+    gate,
+    final_score,
+    original_index: int,
+    profile: str,
+) -> dict:
+    return {
+        "clip": clip,
+        "plan": plan,
+        "originality": originality,
+        "qa": qa,
+        "proposal": proposal,
+        "satisfaction": satisfaction,
+        "gate": gate,
+        "final_score": final_score,
+        "original_index": original_index,
+        "profile": profile,
+    }
+
+
+def _log_satisfaction(index: int, satisfaction, gate, final_score) -> None:
+    if not V3_SATISFACTION_DEBUG:
+        return
+    if not satisfaction.available:
+        info(
+            f"[SATISFACTION] candidate={index} status={satisfaction.status}; "
+            "existing score weights will be renormalized."
+        )
+        return
+    info(f"[SATISFACTION] Analyzing candidate {index}")
+    info(f"[SATISFACTION] Payoff: {satisfaction.payoff_score}")
+    info(
+        f"[SATISFACTION] Context independence: "
+        f"{satisfaction.context_independence_score}"
+    )
+    info(
+        f"[SATISFACTION] Expectation match: "
+        f"{satisfaction.expectation_match_score}"
+    )
+    info(f"[SATISFACTION] Ending quality: {satisfaction.ending_quality_score}")
+    info(
+        f"[SATISFACTION] Final satisfaction: "
+        f"{satisfaction.viewer_satisfaction_score}"
+    )
+    if gate.status == "REJECT":
+        warning(
+            f"[QUALITY GATE] Candidate rejected: {'; '.join(gate.reasons)}"
+        )
+    info(
+        f"[RANKING] final={final_score.score} components={final_score.components}"
+    )
+
+
+def _save_selected_debug(video_name: str, final_index: int, record: dict) -> None:
+    clip = record["clip"]
+    plan = record["plan"]
+    originality = record["originality"]
+    qa = record["qa"]
+    proposal = record["proposal"]
+    satisfaction = record["satisfaction"]
+    gate = record["gate"]
+    final_score = record["final_score"]
+
+    debug = _debug_dir(video_name, final_index)
+    _save(
+        debug / "highlight.json",
+        {
+            **clip,
+            "source_candidate_index": record["original_index"],
+        },
+    )
+    _save(debug / "hook_analysis.json", plan.hook.__dict__)
+    _save(
+        debug / "editorial_angle.json",
+        {
+            "primary_angle": plan.editorial_angle,
+            "viewer_question": plan.viewer_question,
+            "stakes": plan.stakes,
+            "payoff": plan.payoff,
+        },
+    )
+    _save(
+        debug / "originality_analysis.json",
+        proposal.get("originality_analysis", {}) if proposal else {},
+    )
+    _save(debug / "viewer_satisfaction.json", satisfaction.to_dict())
+    _save(debug / "quality_gate.json", gate.to_dict())
+    _save(debug / "final_score.json", final_score.to_dict())
+    _save(debug / "edit_plan.json", plan.to_dict())
+    _save(debug / "originality_qa.json", qa.__dict__)
 
 
 def run_v3_editorial_stage(
@@ -202,11 +372,10 @@ def run_v3_editorial_stage(
         reasoner = None
 
     quota_exhausted = False
+    records: list[dict] = []
+
     for index, clip in enumerate(clips, start=1):
         profile = infer_profile(clip, requested_profile).name
-        debug = _debug_dir(video_name, index)
-        _save(debug / "highlight.json", clip)
-
         context_start = max(
             0.0,
             float(clip["start"]) - float(V3_CONTEXT_BEFORE),
@@ -227,6 +396,34 @@ def run_v3_editorial_stage(
                 clip,
                 profile,
                 "gemini_editorial_unavailable",
+            )
+            satisfaction = analyze_viewer_satisfaction(
+                clip=clip,
+                plan=plan,
+                originality=originality,
+                proposal=proposal,
+                content_profile=profile,
+                video_duration=duration,
+                context_end=context_end,
+            )
+            gate = evaluate_quality_gates(satisfaction)
+            final_score = calculate_final_short_score(
+                hook_score=_hook_score(clip, plan),
+                retention_score=_retention_score(clip),
+                originality_score=originality.originality_score,
+                satisfaction=satisfaction,
+            )
+            best = _build_attempt_record(
+                clip=clip,
+                plan=plan,
+                originality=originality,
+                qa=qa,
+                proposal=proposal,
+                satisfaction=satisfaction,
+                gate=gate,
+                final_score=final_score,
+                original_index=index,
+                profile=profile,
             )
         else:
             best = None
@@ -255,7 +452,34 @@ def run_v3_editorial_stage(
                         profile,
                         "gemini_daily_quota_exhausted",
                     )
-                    best = (plan, originality, qa, proposal)
+                    satisfaction = analyze_viewer_satisfaction(
+                        clip=clip,
+                        plan=plan,
+                        originality=originality,
+                        proposal=proposal,
+                        content_profile=profile,
+                        video_duration=duration,
+                        context_end=context_end,
+                    )
+                    gate = evaluate_quality_gates(satisfaction)
+                    final_score = calculate_final_short_score(
+                        hook_score=_hook_score(clip, plan),
+                        retention_score=_retention_score(clip),
+                        originality_score=originality.originality_score,
+                        satisfaction=satisfaction,
+                    )
+                    best = _build_attempt_record(
+                        clip=clip,
+                        plan=plan,
+                        originality=originality,
+                        qa=qa,
+                        proposal=proposal,
+                        satisfaction=satisfaction,
+                        gate=gate,
+                        final_score=final_score,
+                        original_index=index,
+                        profile=profile,
+                    )
                     break
                 except Exception as exc:
                     warning(
@@ -267,7 +491,34 @@ def run_v3_editorial_stage(
                         profile,
                         f"editorial_error:{exc}",
                     )
-                    best = (plan, originality, qa, proposal)
+                    satisfaction = analyze_viewer_satisfaction(
+                        clip=clip,
+                        plan=plan,
+                        originality=originality,
+                        proposal=proposal,
+                        content_profile=profile,
+                        video_duration=duration,
+                        context_end=context_end,
+                    )
+                    gate = evaluate_quality_gates(satisfaction)
+                    final_score = calculate_final_short_score(
+                        hook_score=_hook_score(clip, plan),
+                        retention_score=_retention_score(clip),
+                        originality_score=originality.originality_score,
+                        satisfaction=satisfaction,
+                    )
+                    best = _build_attempt_record(
+                        clip=clip,
+                        plan=plan,
+                        originality=originality,
+                        qa=qa,
+                        proposal=proposal,
+                        satisfaction=satisfaction,
+                        gate=gate,
+                        final_score=final_score,
+                        original_index=index,
+                        profile=profile,
+                    )
                     break
 
                 angle = generate_angle(proposal)
@@ -340,6 +591,37 @@ def run_v3_editorial_stage(
                     )
 
                 originality = score_edit_plan(plan, analysis)
+                satisfaction = analyze_viewer_satisfaction(
+                    clip=clip,
+                    plan=plan,
+                    originality=originality,
+                    proposal=proposal,
+                    content_profile=profile,
+                    video_duration=duration,
+                    context_end=context_end,
+                )
+                end_changed, end_reason = apply_satisfaction_end_optimization(
+                    plan=plan,
+                    satisfaction=satisfaction,
+                    clip=clip,
+                    video_duration=duration,
+                    context_end=context_end,
+                )
+                satisfaction_smartcut = _satisfaction_requires_smartcut(satisfaction)
+                if end_changed or satisfaction_smartcut:
+                    plan.no_transformation_needed = False
+                    if end_changed:
+                        info(
+                            f"[SATISFACTION][END] clip={index} {end_reason}"
+                        )
+                    if satisfaction_smartcut:
+                        plan.metadata["satisfaction_smartcut_protection"] = True
+
+                # END changes can alter narrative duration/completeness; refresh
+                # originality score before QA without changing its definition.
+                if end_changed:
+                    originality = score_edit_plan(plan, analysis)
+
                 qa = run_originality_qa(
                     plan=plan,
                     originality=originality,
@@ -351,12 +633,36 @@ def run_v3_editorial_stage(
                     source_duration=duration,
                     max_effects_per_event=V3_MAX_EFFECTS_PER_EVENT,
                 )
-                candidate = (plan, originality, qa, proposal)
-                if (
-                    best is None
-                    or originality.originality_score
-                    > best[1].originality_score
-                ):
+                gate = evaluate_quality_gates(satisfaction)
+                final_score = calculate_final_short_score(
+                    hook_score=_hook_score(clip, plan),
+                    retention_score=_retention_score(clip),
+                    originality_score=originality.originality_score,
+                    satisfaction=satisfaction,
+                )
+                plan.metadata["viewer_satisfaction"] = {
+                    "status": satisfaction.status,
+                    "score": satisfaction.viewer_satisfaction_score,
+                    "payoff_score": satisfaction.payoff_score,
+                    "context_score": satisfaction.context_independence_score,
+                    "quality_gate": gate.status,
+                    "final_score": final_score.score,
+                    "end_adjustment_applied": satisfaction.end_adjustment_applied,
+                }
+
+                candidate = _build_attempt_record(
+                    clip=clip,
+                    plan=plan,
+                    originality=originality,
+                    qa=qa,
+                    proposal=proposal,
+                    satisfaction=satisfaction,
+                    gate=gate,
+                    final_score=final_score,
+                    original_index=index,
+                    profile=profile,
+                )
+                if best is None or _candidate_key(candidate) > _candidate_key(best):
                     best = candidate
 
                 info(
@@ -369,15 +675,20 @@ def run_v3_editorial_stage(
                     f"score={originality.originality_score} "
                     f"qa={'pass' if qa.passed else 'retry'}"
                 )
-                if qa.passed:
+                _log_satisfaction(index, satisfaction, gate, final_score)
+
+                if qa.passed and gate.status in {"PASS", "UNAVAILABLE_FALLBACK"}:
                     break
 
                 retry_feedback = (
-                    originality.weaknesses + qa.problems
-                )[:8]
+                    originality.weaknesses
+                    + qa.problems
+                    + gate.reasons
+                    + satisfaction.recommended_changes
+                )[:10]
                 if attempt + 1 < attempts:
                     info(
-                        "[ORIGINALITY] regenerating edit plan "
+                        "[V3] regenerating edit plan for originality/satisfaction "
                         f"weaknesses={retry_feedback}"
                     )
 
@@ -388,43 +699,118 @@ def run_v3_editorial_stage(
                     profile,
                     "no_valid_v3_plan",
                 )
+                satisfaction = analyze_viewer_satisfaction(
+                    clip=clip,
+                    plan=plan,
+                    originality=originality,
+                    proposal=proposal,
+                    content_profile=profile,
+                    video_duration=duration,
+                    context_end=context_end,
+                )
+                gate = evaluate_quality_gates(satisfaction)
+                final_score = calculate_final_short_score(
+                    hook_score=_hook_score(clip, plan),
+                    retention_score=_retention_score(clip),
+                    originality_score=originality.originality_score,
+                    satisfaction=satisfaction,
+                )
+                best = _build_attempt_record(
+                    clip=clip,
+                    plan=plan,
+                    originality=originality,
+                    qa=qa,
+                    proposal=proposal,
+                    satisfaction=satisfaction,
+                    gate=gate,
+                    final_score=final_score,
+                    original_index=index,
+                    profile=profile,
+                )
             else:
-                plan, originality, qa, proposal = best
-                if not qa.passed:
+                if not best["qa"].passed:
                     warning(
                         f"[ORIGINALITY] clip={index} below target after retries; "
-                        f"using best valid plan score={originality.originality_score}"
+                        f"using best valid plan score={best['originality'].originality_score}"
+                    )
+                if best["gate"].status == "REJECT":
+                    warning(
+                        f"[SATISFACTION] clip={index} still below quality gates after retries: "
+                        f"{best['gate'].reasons}"
                     )
 
-        _attach_plan_to_clip(clip, plan, originality, qa)
+        records.append(best)
 
-        plan_dir = HIGHLIGHTS_DIR / "v3" / video_name / f"clip_{index}"
+    selected, rejected, ranking_mode = rank_satisfaction_records(records)
+    original_order = [record["original_index"] for record in records]
+    selected_order = [record["original_index"] for record in selected]
+    ranking_changed = selected_order != original_order
+
+    if ranking_mode == "satisfaction_unavailable_preserve_order":
+        info(
+            "[SATISFACTION] unavailable pentru toate candidate-urile; "
+            "păstrez ordinea existentă și scoring-ul upstream."
+        )
+    else:
+        info(
+            f"[SATISFACTION][RANKING] mode={ranking_mode} | "
+            f"input={len(records)} selected={len(selected)} rejected={len(rejected)}"
+        )
+
+    final_clips: list[dict] = []
+    for final_index, record in enumerate(selected, start=1):
+        clip = record["clip"]
+        plan = record["plan"]
+        plan.clip_index = final_index
+        plan.metadata["source_candidate_index"] = record["original_index"]
+        plan.metadata["satisfaction_rank"] = final_index
+        plan.metadata["satisfaction_ranking_changed"] = ranking_changed
+
+        _attach_plan_to_clip(
+            clip,
+            plan,
+            record["originality"],
+            record["qa"],
+            record["satisfaction"],
+            record["gate"],
+            record["final_score"],
+            satisfaction_ranking_changed=ranking_changed,
+        )
+        clip["satisfaction_rank"] = final_index
+        final_clips.append(clip)
+
+        plan_dir = HIGHLIGHTS_DIR / "v3" / video_name / f"clip_{final_index}"
         _save(plan_dir / "edit_plan.json", plan.to_dict())
-
-        _save(debug / "hook_analysis.json", plan.hook.__dict__)
-        _save(
-            debug / "editorial_angle.json",
-            {
-                "primary_angle": plan.editorial_angle,
-                "viewer_question": plan.viewer_question,
-                "stakes": plan.stakes,
-                "payoff": plan.payoff,
-            },
-        )
-        _save(
-            debug / "originality_analysis.json",
-            proposal.get("originality_analysis", {}) if proposal else {},
-        )
-        _save(debug / "edit_plan.json", plan.to_dict())
-        _save(debug / "originality_qa.json", qa.__dict__)
+        _save_selected_debug(video_name, final_index, record)
 
         info(
-            f"[HOOK] clip={index} selected={plan.hook.mode} "
+            f"[HOOK] clip={final_index} selected={plan.hook.mode} "
             f"score={plan.hook.score} | "
             f"[EDIT] visual_events={len(plan.visual_events)} "
-            f"audio_events={len(plan.audio_events)}"
+            f"audio_events={len(plan.audio_events)} | "
+            f"[SATISFACTION] score={record['satisfaction'].viewer_satisfaction_score} "
+            f"gate={record['gate'].status} final={record['final_score'].score}"
         )
 
-    _save(highlights_path, clips)
-    success(f"[V3] Editorial stage terminat pentru {len(clips)} Shorts.")
+    if rejected:
+        _save(
+            HIGHLIGHTS_DIR / f"{video_name}_satisfaction_rejected.json",
+            [
+                {
+                    "source_candidate_index": record["original_index"],
+                    "start": record["clip"].get("start"),
+                    "end": record["clip"].get("end"),
+                    "satisfaction": record["satisfaction"].to_dict(),
+                    "quality_gate": record["gate"].to_dict(),
+                    "final_score": record["final_score"].to_dict(),
+                }
+                for record in rejected
+            ],
+        )
+
+    _save(highlights_path, final_clips)
+    success(
+        f"[V3] Editorial + Viewer Satisfaction terminat pentru "
+        f"{len(final_clips)} Shorts."
+    )
     return highlights_path
