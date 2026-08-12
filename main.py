@@ -127,9 +127,6 @@ def _validate_resume_prerequisites(video_name: str, resume_from: str | None) -> 
 
 def _cleanup_targets(video_name: str, resume_from: str | None) -> list[Path]:
     if resume_from == "v3":
-        # Preserve current output clips, subtitles and finals until V3 tells us
-        # whether there is anything executable to rebuild. This makes quota
-        # retries cheap and prevents deleting good existing renders.
         return [
             HIGHLIGHTS_DIR / "v3" / video_name,
             OUTPUT_DIR / "debug" / video_name,
@@ -193,6 +190,18 @@ def parse_args():
         help="auto folosește V3_ENABLED; on forțează V3; off rulează pipeline-ul V2.",
     )
     parser.add_argument(
+        "--visual-hook",
+        "--visual-hook-effect",
+        dest="visual_hook",
+        choices=["auto", "camera-whip", "punch-in", "focus-crop", "face-zoom"],
+        default="auto",
+        help=(
+            "Forțează același efect vizual de opening pe TOATE Shorts-urile. "
+            "auto păstrează Visual Hook Engine AI; celelalte opțiuni suprascriu "
+            "opening-ul pentru fiecare clip."
+        ),
+    )
+    parser.add_argument(
         "--resume-from",
         choices=["v3"],
         default=None,
@@ -230,6 +239,7 @@ def main():
     video_path = INPUT_DIR / f"{video_name}.mp4"
     v3_requested = V3_ENABLED if args.v3_mode == "auto" else args.v3_mode == "on"
     resume_from = args.resume_from
+    forced_visual_hook = args.visual_hook != "auto"
     os.environ["SMARTCROP_MODE_RUNTIME"] = args.smartcrop_mode
 
     if not video_path.exists():
@@ -238,6 +248,13 @@ def main():
 
     if resume_from == "v3" and not v3_requested:
         raise ValueError("--resume-from v3 necesită V3 activ (--v3-mode on sau V3_ENABLED=true).")
+    if forced_visual_hook and not v3_requested:
+        raise ValueError("--visual-hook necesită V3 activ (--v3-mode on sau V3_ENABLED=true).")
+
+    if forced_visual_hook:
+        info(
+            f"[VISUAL HOOK][CLI] Force all Shorts: effect={args.visual_hook}"
+        )
 
     _validate_resume_prerequisites(video_name, resume_from)
     if resume_from == "v3":
@@ -352,11 +369,19 @@ def main():
         info("8/11 V3 dezactivat; folosesc comportamentul V2.")
         timings["v3_editorial"] = 0.0
 
-    v3_execute = v3_requested and has_executable_v3_changes(video_name)
+    v3_execute = v3_requested and (
+        has_executable_v3_changes(video_name) or forced_visual_hook
+    )
     keep_existing_downstream = _should_keep_existing_downstream(
         resume_from,
         v3_execute,
     )
+
+    if forced_visual_hook:
+        info(
+            f"[VISUAL HOOK][CLI] Rebuild forced so effect={args.visual_hook} "
+            "is applied to every final Short."
+        )
 
     if v3_requested and not v3_execute:
         if keep_existing_downstream:
@@ -379,8 +404,6 @@ def main():
         clips = _existing_final_outputs()
     else:
         if resume_from == "v3":
-            # V3 really needs a rebuild (or no final outputs exist). Remove only
-            # downstream media artifacts now, after the execution decision.
             clean_matching_files(OUTPUT_DIR, "clip_*.mp4")
             clean_folder(SUBTITLES_DIR)
             clean_folder(FINAL_DIR)
@@ -423,6 +446,7 @@ def main():
                     video_name=video_name,
                     clip_index=index,
                     rendered_path=Path(output),
+                    visual_hook_override=args.visual_hook,
                 )
             timings["semantic_post"] = time.time() - started
         else:
@@ -461,6 +485,8 @@ def main():
     print(f"Rezultate finale: {FINAL_DIR}")
     if resume_from:
         print(f"Resume mode: {resume_from}")
+    if forced_visual_hook:
+        print(f"Visual hook forced on all Shorts: {args.visual_hook}")
     print()
     print("--- TIMPI PIPELINE ---")
     for key in [
