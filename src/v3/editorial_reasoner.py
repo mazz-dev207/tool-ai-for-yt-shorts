@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from src.config import GEMINI_API_KEY, GEMINI_MAX_RETRIES, GEMINI_MODEL, TEMP_DIR
+from src.satisfaction.satisfaction_analyzer import build_end_candidate_values
 from src.v3_config import (
     V3_CACHE_DIR,
     V3_CONTEXT_AFTER,
@@ -22,6 +23,124 @@ from src.highlights.gemini_judge import (
     _retry_delay_seconds,
     build_transcript_context,
 )
+
+
+VIEWER_SATISFACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "viewer_satisfaction_score": {"type": "integer"},
+        "payoff_score": {"type": "integer"},
+        "expectation_match_score": {"type": "integer"},
+        "context_independence_score": {"type": "integer"},
+        "clarity_score": {"type": "integer"},
+        "emotional_completeness_score": {"type": "integer"},
+        "value_density_score": {"type": "integer"},
+        "ending_quality_score": {"type": "integer"},
+        "hook_promise": {"type": "string"},
+        "actual_payoff": {"type": "string"},
+        "structure": {
+            "type": "object",
+            "properties": {
+                "setup": {"type": "boolean"},
+                "tension": {"type": "boolean"},
+                "escalation": {"type": "boolean"},
+                "payoff": {"type": "boolean"},
+                "pattern": {"type": "string"},
+            },
+            "required": ["setup", "tension", "escalation", "payoff", "pattern"],
+        },
+        "payoff": {
+            "type": "object",
+            "properties": {
+                "exists": {"type": "boolean"},
+                "type": {"type": "string"},
+                "timestamp": {"type": ["number", "null"]},
+                "strength": {"type": "integer"},
+                "reason": {"type": "string"},
+            },
+            "required": ["exists", "type", "timestamp", "strength", "reason"],
+        },
+        "risks": {
+            "type": "object",
+            "properties": {
+                "confusing_start": {"type": "boolean"},
+                "missing_context": {"type": "boolean"},
+                "weak_payoff": {"type": "boolean"},
+                "clickbait_gap": {"type": "boolean"},
+                "clickbait_gap_score": {"type": "integer"},
+                "abrupt_ending": {"type": "boolean"},
+                "dead_air": {"type": "boolean"},
+                "generic_outro": {"type": "boolean"},
+            },
+            "required": [
+                "confusing_start", "missing_context", "weak_payoff",
+                "clickbait_gap", "clickbait_gap_score", "abrupt_ending",
+                "dead_air", "generic_outro",
+            ],
+        },
+        "score_reasons": {
+            "type": "object",
+            "properties": {
+                "payoff_reason": {"type": "string"},
+                "expectation_match_reason": {"type": "string"},
+                "context_independence_reason": {"type": "string"},
+                "clarity_reason": {"type": "string"},
+                "emotional_completeness_reason": {"type": "string"},
+                "value_density_reason": {"type": "string"},
+                "ending_quality_reason": {"type": "string"},
+            },
+            "required": [
+                "payoff_reason", "expectation_match_reason",
+                "context_independence_reason", "clarity_reason",
+                "emotional_completeness_reason", "value_density_reason",
+                "ending_quality_reason",
+            ],
+        },
+        "protected_ranges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "start": {"type": "number"},
+                    "end": {"type": "number"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["start", "end", "reason"],
+            },
+        },
+        "ending_candidates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "end": {"type": "number"},
+                    "payoff_score": {"type": "integer"},
+                    "emotional_completeness_score": {"type": "integer"},
+                    "ending_quality_score": {"type": "integer"},
+                    "viewer_satisfaction_score": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+                "required": [
+                    "end", "payoff_score", "emotional_completeness_score",
+                    "ending_quality_score", "viewer_satisfaction_score", "reason",
+                ],
+            },
+        },
+        "recommended_end": {"type": ["number", "null"]},
+        "recommended_changes": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+    },
+    "required": [
+        "viewer_satisfaction_score", "payoff_score", "expectation_match_score",
+        "context_independence_score", "clarity_score",
+        "emotional_completeness_score", "value_density_score",
+        "ending_quality_score", "hook_promise", "actual_payoff", "structure",
+        "payoff", "risks", "score_reasons", "protected_ranges",
+        "ending_candidates", "recommended_end", "recommended_changes",
+    ],
+}
 
 
 EDITORIAL_SCHEMA = {
@@ -163,6 +282,10 @@ EDITORIAL_SCHEMA = {
             "type": "array",
             "items": {"type": "string"},
         },
+        # Optional at the outer schema level so a malformed/missing Satisfaction
+        # block never invalidates an otherwise usable editorial plan. The engine
+        # will mark Satisfaction unavailable and preserve existing ranking.
+        "viewer_satisfaction": VIEWER_SATISFACTION_SCHEMA,
     },
     "required": [
         "editorial_angle", "originality_analysis", "hook_candidates", "timeline",
@@ -272,7 +395,6 @@ def _validate_response_shape(raw: dict) -> dict:
         if not isinstance(raw.get(key), list):
             raise ValueError(f"V3 Gemini field must be list: {key}")
 
-    # Bound AI output before deterministic validators/executors see it.
     raw["hook_candidates"] = raw["hook_candidates"][:6]
     raw["timeline"] = raw["timeline"][:8]
     raw["context_overlays"] = raw["context_overlays"][:4]
@@ -280,6 +402,21 @@ def _validate_response_shape(raw: dict) -> dict:
     raw["audio_events"] = raw["audio_events"][:6]
     raw["caption_emphasis"] = raw["caption_emphasis"][:8]
     raw["recommended_transformations"] = raw["recommended_transformations"][:10]
+
+    satisfaction = raw.get("viewer_satisfaction")
+    if satisfaction is not None and not isinstance(satisfaction, dict):
+        raw.pop("viewer_satisfaction", None)
+    elif isinstance(satisfaction, dict):
+        for key, limit in (
+            ("protected_ranges", 10),
+            ("ending_candidates", 6),
+            ("recommended_changes", 8),
+        ):
+            value = satisfaction.get(key)
+            if isinstance(value, list):
+                satisfaction[key] = value[:limit]
+            elif value is not None:
+                satisfaction[key] = []
     return raw
 
 
@@ -293,6 +430,7 @@ def build_editorial_prompt(
     retry_feedback: list[str] | None = None,
 ) -> str:
     feedback = ", ".join(retry_feedback or []) or "none"
+    end_candidates = build_end_candidate_values(float(clip["end"]), context_end)
     return f"""
 You are the editorial reasoning layer for AI Shorts V3.
 The highlight and Hook Optimizer analysis already exist. Do NOT replace highlight ranking.
@@ -342,6 +480,39 @@ ORIGINALITY:
 Estimate source dependency and whether meaningful editorial transformation is actually useful.
 It is valid to return no_transformation_needed=true if the source moment is already a strong standalone short.
 Originality means meaningful editorial value, not arbitrary effects and not platform-detection evasion.
+
+VIEWER SATISFACTION — REQUIRED WHEN EVIDENCE IS SUFFICIENT:
+Evaluate the COMPLETE viewer experience, not just scroll-stop or watch time. Use the uploaded VIDEO + AUDIO together
+with transcript/timestamps and EXISTING METADATA. A visual gameplay death, facial reaction, reveal, silence, camera change
+or physical result can be payoff even when transcript text does not say it.
+
+Score independently (0-100): payoff quality, hook-to-payoff expectation match, context independence, clarity,
+emotional completeness, value density, and ending quality. Keep each reason evidence-based and short.
+Do not reward exaggerated hooks. Explicitly describe HOOK PROMISE and ACTUAL PAYOFF and flag clickbait_gap when delivery
+is materially weaker/different than the promise.
+
+Content-aware mini-structures:
+- gaming: action -> problem/stakes -> reaction/escalation -> payoff/result
+- podcast/interview: claim -> curiosity -> explanation -> insight/conclusion
+- entertainment: setup -> expectation/challenge -> escalation/twist -> reaction/result
+- reaction: trigger -> anticipation -> reaction -> interpretation/payoff
+- story: curiosity/setup -> escalation -> resolution
+These are guides, not mandatory rigid templates.
+
+VALUE DENSITY:
+Dead air is low-value silence/filler. Do NOT call a pause dead air when it creates tension, comedy, anticipation,
+emotional weight or makes a reaction readable. Put such source-grounded moments in protected_ranges using ABSOLUTE
+source timestamps and a reason such as comedic_pause, tension, anticipation, reaction, visual_payoff or necessary_context.
+
+ENDING OPTIMIZATION:
+Evaluate ONLY these allowed absolute END candidates: {json.dumps(end_candidates)}
+For each useful candidate, score payoff, emotional completeness, ending quality and overall satisfaction.
+recommended_end MUST be one of those values or null. Choose the ending that best completes the viewer experience,
+not the shortest ending. Penalize generic outro, dead air after payoff, and abrupt ending before reaction/resolution.
+
+The viewer_satisfaction_score you return is advisory/evidence only; deterministic code recalculates the final Satisfaction
+score from sub-scores and later combines it with Hook, Retention and Originality using configured weights.
+If evidence is genuinely insufficient, keep reasons explicit rather than inventing certainty.
 
 RETRY WEAKNESSES FROM QA: {feedback}
 
