@@ -45,6 +45,9 @@ def export_experiment_metadata(video_name: str) -> Path | None:
     for index, clip in enumerate(clips, start=1):
         v3 = clip.get("v3") or {}
         strategy_context = clip.get("strategy_context") or {}
+        satisfaction = clip.get("satisfaction") if isinstance(clip.get("satisfaction"), dict) else {}
+        final_score = clip.get("final_score") if isinstance(clip.get("final_score"), dict) else {}
+        quality_gate = clip.get("quality_gate") if isinstance(clip.get("quality_gate"), dict) else {}
         metadata = ExperimentMetadata(
             short_id=f"{video_name}_clip_{index}",
             format_id=str(clip.get("format_id", "unclassified") or "unclassified"),
@@ -58,6 +61,18 @@ def export_experiment_metadata(video_name: str) -> Path | None:
         item = metadata.to_dict()
         item["format_fit_score"] = float(clip.get("format_fit_score", 0) or 0)
         item["strategic_gate"] = str(clip.get("strategic_gate", "UNKNOWN"))
+        item["viewer_satisfaction_score"] = satisfaction.get("viewer_satisfaction_score")
+        item["payoff_score"] = satisfaction.get("payoff_score")
+        item["expectation_match_score"] = satisfaction.get("expectation_match_score")
+        item["context_independence_score"] = satisfaction.get("context_independence_score")
+        item["clarity_score"] = satisfaction.get("clarity_score")
+        item["emotional_completeness_score"] = satisfaction.get("emotional_completeness_score")
+        item["value_density_score"] = satisfaction.get("value_density_score")
+        item["ending_quality_score"] = satisfaction.get("ending_quality_score")
+        item["satisfaction_status"] = str(satisfaction.get("status", "unavailable"))
+        item["final_score"] = final_score.get("score")
+        item["quality_gate"] = str(quality_gate.get("status", "UNKNOWN"))
+        item["satisfaction_rank"] = clip.get("satisfaction_rank")
         items.append(item)
 
         debug_dir = OUTPUT_DIR / "debug" / video_name / f"clip_{index}"
@@ -67,6 +82,12 @@ def export_experiment_metadata(video_name: str) -> Path | None:
             _save(debug_dir / "format_match.json", strategy_context.get("format_match", {}))
             _save(debug_dir / "content_opportunity.json", strategy_context.get("content_opportunity", {}))
             _save(debug_dir / "channel_strategy.json", strategy_context.get("channel_strategy", {}))
+        if satisfaction:
+            _save(debug_dir / "viewer_satisfaction.json", satisfaction)
+        if final_score:
+            _save(debug_dir / "final_score.json", final_score)
+        if quality_gate:
+            _save(debug_dir / "quality_gate.json", quality_gate)
 
     output = OUTPUT_DIR / "debug" / video_name / "experiment_metadata.json"
     _save(
@@ -74,7 +95,11 @@ def export_experiment_metadata(video_name: str) -> Path | None:
         {
             "video": video_name,
             "shorts": items,
-            "note": "Performance fields are intentionally empty until imported from YouTube/TikTok analytics.",
+            "note": (
+                "Performance fields are intentionally empty until imported from "
+                "YouTube/TikTok analytics. Satisfaction scores are model/ranking "
+                "signals, not guaranteed view predictions."
+            ),
         },
     )
     success(f"[EXPERIMENT] Exported metadata for {len(items)} Shorts: {output}")
