@@ -159,9 +159,6 @@ def _hook_score(clip: dict, edit_plan: dict) -> float:
 
 
 def _position_for_runtime() -> str:
-    mode = os.getenv("SMARTCROP_MODE_RUNTIME", "auto").strip().lower()
-    if mode == "gameplay-webcam":
-        return "gameplay_top"
     return "top_safe"
 
 

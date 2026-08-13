@@ -12,6 +12,7 @@ from src.config import (
     SMARTCROP_WEBCAM_PERSISTENCE,
 )
 from src.logger import info, success, warning
+from src.caption_hooks.renderer import strip_caption_hook_from_ass
 from src.smart_crop import write_sendcmd, initial_crop_xy
 from src.smart_crop_profiles import upgrade_plan_for_profile
 from src.smart_crop_v2 import (
@@ -331,9 +332,20 @@ def render(clip_name: str, content_profile: str = "auto"):
     _log_smartcrop_decision(plan)
     save_smartcrop_debug(clip_name, plan)
 
+    subtitle_for_render = subtitle
+    if "WEBCAM" in str(plan.mode or "").upper():
+        subtitle_for_render = strip_caption_hook_from_ass(
+            subtitle,
+            TEMP_DIR / f"{clip_name}_no_caption_hook.ass",
+        )
+        info(
+            f"[CAPTION HOOK] clip={clip_name} OFF: "
+            f"SmartCrop detected webcam layout mode={plan.mode}"
+        )
+
     if plan.mode == "GAMEPLAY_WEBCAM_STACK":
         try:
-            _render_gameplay_webcam_stack(video, subtitle, output, plan, clip_name)
+            _render_gameplay_webcam_stack(video, subtitle_for_render, output, plan, clip_name)
             success(f"Clip randat: {output.name}")
             return output
         except Exception as exc:
@@ -342,7 +354,7 @@ def render(clip_name: str, content_profile: str = "auto"):
 
     if plan.mode == "GAMEPLAY_WEBCAM":
         try:
-            _render_gameplay_webcam(video, subtitle, output, plan, clip_name)
+            _render_gameplay_webcam(video, subtitle_for_render, output, plan, clip_name)
             success(f"Clip randat: {output.name}")
             return output
         except Exception as exc:
@@ -351,7 +363,7 @@ def render(clip_name: str, content_profile: str = "auto"):
 
     if plan.mode == "GAMEPLAY_ONLY":
         try:
-            _render_gameplay_only(video, subtitle, output, plan, clip_name)
+            _render_gameplay_only(video, subtitle_for_render, output, plan, clip_name)
             success(f"Clip randat: {output.name}")
             return output
         except Exception as exc:
@@ -360,13 +372,13 @@ def render(clip_name: str, content_profile: str = "auto"):
 
     if plan.mode == "PODCAST_MULTI_SPEAKER":
         try:
-            _render_podcast_multi_speaker(video, subtitle, output, plan)
+            _render_podcast_multi_speaker(video, subtitle_for_render, output, plan)
             success(f"Clip randat: {output.name}")
             return output
         except Exception as exc:
             warning(f"[SMARTCROP] PODCAST_MULTI_SPEAKER render failed: {exc}")
             warning("[SMARTCROP] Falling back to existing SmartCrop")
 
-    _render_legacy(video, subtitle, output, plan.legacy_plan, clip_name)
+    _render_legacy(video, subtitle_for_render, output, plan.legacy_plan, clip_name)
     success(f"Clip randat: {output.name}")
     return output

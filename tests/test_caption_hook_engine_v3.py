@@ -262,7 +262,7 @@ class CaptionHookEngineV3Tests(unittest.TestCase):
             self.assertIn("Style: CaptionHook,", content)
             self.assertIn("Dialogue: 5,", content)
             self.assertIn(normal_event, content)
-            self.assertIn(r"\pos(540,205)", content)
+            self.assertIn(r"\pos(540,240)", content)
 
     def test_12_gameplay_webcam_position_stays_below_webcam_safe_zone(self):
         result = CaptionHookResult(
