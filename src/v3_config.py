@@ -78,6 +78,27 @@ V3_FINAL_SCORE_WEIGHTS = {
     "context": _env_float("CONTEXT_WEIGHT", 0.05),
 }
 
+# --------------------------------------------------
+# Caption Hook Engine
+# --------------------------------------------------
+V3_CAPTION_HOOK_ENABLED = _env_bool("CAPTION_HOOK_ENABLED", True)
+V3_CAPTION_HOOK_MIN_SCORE = _env_int("CAPTION_HOOK_MIN_SCORE", 75)
+V3_CAPTION_HOOK_MAX_WORDS = _env_int("CAPTION_HOOK_MAX_WORDS", 7)
+V3_CAPTION_HOOK_MAX_LINES = _env_int("CAPTION_HOOK_MAX_LINES", 2)
+V3_CAPTION_HOOK_MIN_DURATION = _env_float("CAPTION_HOOK_MIN_DURATION", 0.8)
+V3_CAPTION_HOOK_MAX_DURATION = _env_float("CAPTION_HOOK_MAX_DURATION", 2.0)
+V3_CAPTION_HOOK_DEFAULT_DURATION = _env_float("CAPTION_HOOK_DEFAULT_DURATION", 1.4)
+V3_CAPTION_HOOK_ALLOW_NONE = _env_bool("CAPTION_HOOK_ALLOW_NONE", True)
+V3_CAPTION_HOOK_DEBUG = _env_bool("CAPTION_HOOK_DEBUG", True)
+V3_CAPTION_HOOK_GENERATOR = os.getenv("CAPTION_HOOK_GENERATOR", "auto").strip().lower()
+if V3_CAPTION_HOOK_GENERATOR not in {"auto", "local", "off"}:
+    V3_CAPTION_HOOK_GENERATOR = "auto"
+V3_CAPTION_HOOK_PROMPT_VERSION = os.getenv(
+    "CAPTION_HOOK_PROMPT_VERSION",
+    "caption-hook-v1-local-truth-aware",
+).strip()
+V3_CAPTION_HOOK_CACHE_DIR = BASE_DIR / "cache" / "caption_hooks"
+
 
 def load_editorial_profile() -> dict:
     if not V3_EDITORIAL_PROFILE_PATH.exists():
