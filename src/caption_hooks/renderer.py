@@ -8,8 +8,8 @@ from src.logger import info, warning
 
 
 _STYLE_NAME = "CaptionHook"
-_PRIMARY = "&H00FFFFFF"
-_ACCENT = "&H0000FFFF"
+_PRIMARY = "&H00FFFFFF&"
+_ACCENT = "&H0000FFFF&"
 
 
 def _escape_ass(text: str) -> str:
@@ -38,9 +38,10 @@ def _styled_text(result: CaptionHookResult) -> str:
 
 def _position(result: CaptionHookResult) -> tuple[int, int]:
     if result.position == "gameplay_top":
-        # GAMEPLAY_WEBCAM_STACK keeps webcam in the upper ~38-48%.
-        # Put the editorial hook just inside the gameplay panel, away from face ROI.
-        return 540, 790
+        # Forced GAMEPLAY_WEBCAM_STACK can reserve as much as ~48% of 1920px
+        # for webcam. 1160 stays below that region and also keeps separation
+        # from the normal center-positioned karaoke captions.
+        return 540, 1160
     return 540, 205
 
 
