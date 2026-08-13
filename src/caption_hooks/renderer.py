@@ -113,9 +113,12 @@ def _background_line(result: CaptionHookResult) -> str:
     start, end = _times(result)
     left, top, right, bottom = _card_bounds(result)
     shape = _rounded_rect(left, top, right, bottom)
+    # IMPORTANT: this is a normal raw string, not an f-string. A literal `}}`
+    # here would emit TWO closing braces into ASS; libass consumes the first and
+    # renders the second as visible text. Close the override block exactly once.
     tags = (
         rf"{{\an7\pos(0,0)\p1\1c{_BOX_COLOR}\1a&H28&"
-        r"\bord0\shad0\fad(80,180)}}"
+        r"\bord0\shad0\fad(80,180)}"
     )
     return (
         f"Dialogue: 4,{ass_time(start)},{ass_time(end)},{_BOX_STYLE_NAME},"
@@ -127,11 +130,13 @@ def _text_line(result: CaptionHookResult) -> str:
     start, end = _times(result)
     x, y = _position(result)
 
+    # Same rule as the background tags: the final fragment is a raw string, so
+    # use ONE literal closing brace. `}}` would leak a stray `}` on screen.
     animation = (
         rf"{{\an5\pos({x},{y})\q2\fad(80,180)"
         r"\fscx100\fscy100"
         r"\t(0,130,\fscx105\fscy105)"
-        r"\t(130,260,\fscx100\fscy100)}}"
+        r"\t(130,260,\fscx100\fscy100)}"
     )
     return (
         f"Dialogue: 5,{ass_time(start)},{ass_time(end)},{_STYLE_NAME},"
