@@ -18,7 +18,11 @@ from src.config import (
     TEMP_DIR,
     TRANSCRIPT_DIR,
 )
-from src.v3_config import V3_ENABLED
+from src.v3_config import (
+    V3_ENABLED,
+    V3_CAPTION_HOOK_ENABLED,
+    V3_CAPTION_HOOK_GENERATOR,
+)
 from src.logger import info, success, warning
 from src.transcribe import transcribe
 from src.chunk_transcript import chunk_transcript
@@ -148,13 +152,28 @@ def _existing_final_outputs() -> list[Path]:
     )
 
 
+def _existing_cut_outputs() -> list[Path]:
+    def clip_index(path: Path) -> int:
+        try:
+            return int(path.stem.split("_")[1])
+        except (IndexError, ValueError):
+            return 10**9
+
+    return sorted(
+        OUTPUT_DIR.glob("clip_*.mp4"),
+        key=clip_index,
+    )
+
+
 def _should_keep_existing_downstream(
     resume_from: str | None,
     v3_execute: bool,
+    presentation_rebuild: bool = False,
 ) -> bool:
     return (
         resume_from == "v3"
         and not v3_execute
+        and not presentation_rebuild
         and bool(_existing_final_outputs())
     )
 
@@ -350,10 +369,29 @@ def main():
         timings["v3_editorial"] = 0.0
 
     v3_execute = v3_requested and has_executable_v3_changes(video_name)
+    caption_hook_rebuild = bool(
+        v3_requested
+        and V3_CAPTION_HOOK_ENABLED
+        and V3_CAPTION_HOOK_GENERATOR != "off"
+    )
+    reusable_cut_outputs = _existing_cut_outputs()
+    caption_only_resume = bool(
+        resume_from == "v3"
+        and caption_hook_rebuild
+        and not v3_execute
+        and reusable_cut_outputs
+    )
     keep_existing_downstream = _should_keep_existing_downstream(
         resume_from,
         v3_execute,
+        presentation_rebuild=caption_hook_rebuild,
     )
+
+    if caption_only_resume:
+        info(
+            "[CAPTION HOOK] Resume presentation rebuild: reutilizez clipurile deja tăiate; "
+            "regenerez doar captions + SmartCrop/render."
+        )
 
     if v3_requested and not v3_execute:
         if keep_existing_downstream:
@@ -361,10 +399,14 @@ def main():
                 "[RESUME] V3 nu a produs transformări executabile; "
                 "păstrez clipurile finale existente și sar peste etapele 9-11."
             )
+        elif caption_only_resume:
+            info(
+                "[V3] Caption Hook este singura schimbare media; SmartCut nu este rerulat."
+            )
         else:
             info(
-                "[V3] Nicio transformare executabilă necesară; "
-                "folosesc exact cut/render path-ul V2."
+                "[V3] Nicio transformare editorială V3 executabilă; "
+                "folosesc cut/render path-ul V2-compatible."
             )
 
     if keep_existing_downstream:
@@ -376,29 +418,32 @@ def main():
         clips = _existing_final_outputs()
     else:
         if resume_from == "v3":
-            clean_matching_files(OUTPUT_DIR, "clip_*.mp4")
+            if not caption_only_resume:
+                clean_matching_files(OUTPUT_DIR, "clip_*.mp4")
             clean_folder(SUBTITLES_DIR)
             clean_folder(FINAL_DIR)
 
-        info("9/11 SmartCut / asamblare timeline...")
-        _, timings["cut"] = timed_step(
-            cut_v3 if v3_execute else cut,
-            video_name,
-        )
+        if caption_only_resume:
+            info("9/11 SmartCut / asamblare timeline... SKIP (reuse existing cut outputs)")
+            timings["cut"] = 0.0
+            clips = _existing_cut_outputs()
+        else:
+            info("9/11 SmartCut / asamblare timeline...")
+            _, timings["cut"] = timed_step(
+                cut_v3 if v3_execute else cut,
+                video_name,
+            )
+            clips = _existing_cut_outputs()
 
-        info("10/11 Generare subtitrări + karaoke...")
+        if not clips:
+            raise RuntimeError("Nu au fost generate clipuri.")
+
+        info("10/11 Generare subtitrări + karaoke + Caption Hook...")
         caption_engine = CaptionEngine()
         _, timings["captions"] = timed_step(
             caption_engine.generate,
             video_name,
         )
-
-        clips = sorted(
-            OUTPUT_DIR.glob("clip_*.mp4"),
-            key=lambda path: int(path.stem.split("_")[1]),
-        )
-        if not clips:
-            raise RuntimeError("Nu au fost generate clipuri.")
 
         info(
             f"11/11 SmartCrop + render + semantic post-processing {len(clips)} clipuri | "
@@ -448,7 +493,7 @@ def main():
     else:
         success(
             "AI Shorts V3 pipeline terminat cu succes!"
-            if v3_execute
+            if v3_execute or caption_hook_rebuild
             else "Pipeline terminat cu succes (V2-compatible execution path)!"
         )
     print()
@@ -456,6 +501,8 @@ def main():
     print(f"Rezultate finale: {FINAL_DIR}")
     if resume_from:
         print(f"Resume mode: {resume_from}")
+    if caption_hook_rebuild:
+        print("Caption Hook Engine: enabled")
     print()
     print("--- TIMPI PIPELINE ---")
     for key in [
