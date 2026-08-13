@@ -175,6 +175,26 @@ class CaptionEngine:
 
         return result
 
+    def _write_ass_with_hook(
+        self,
+        *,
+        video_name: str,
+        transcript: list[dict],
+        clip: dict,
+        index: int,
+        groups: list[WordGroup],
+    ) -> None:
+        output = SUBTITLES_DIR / f"clip_{index}.ass"
+        self.writer.write(groups, output)
+        success(f"Creat {output.name}")
+        self._caption_hook(
+            video_name=video_name,
+            transcript=transcript,
+            clip=clip,
+            index=index,
+            output=output,
+        )
+
     def generate_clip(self, video_name, transcript, clip, index):
         info(f"Generez subtitrarea {index}")
 
@@ -192,26 +212,39 @@ class CaptionEngine:
             )
 
         if not words:
-            info(f"Clip {index} nu are cuvinte.")
+            # A visual-payoff Short can legitimately contain no dialogue. Keep a
+            # valid empty ASS file so Caption Hook can still be the only text layer
+            # and the renderer never fails solely because karaoke has no words.
+            info(f"Clip {index} nu are cuvinte; creez ASS valid pentru hook vizual/fallback.")
+            self._write_ass_with_hook(
+                video_name=video_name,
+                transcript=transcript,
+                clip=clip,
+                index=index,
+                groups=[],
+            )
             return
 
         groups = self.validate_groups(group_words(words))
         info(f"Au fost create {len(groups)} grupuri.")
 
         if not groups:
-            info(f"Clip {index} fără grupuri.")
+            info(f"Clip {index} fără grupuri; creez ASS valid pentru Caption Hook.")
+            self._write_ass_with_hook(
+                video_name=video_name,
+                transcript=transcript,
+                clip=clip,
+                index=index,
+                groups=[],
+            )
             return
 
-        output = SUBTITLES_DIR / f"clip_{index}.ass"
-        self.writer.write(groups, output)
-        success(f"Creat {output.name}")
-
-        self._caption_hook(
+        self._write_ass_with_hook(
             video_name=video_name,
             transcript=transcript,
             clip=clip,
             index=index,
-            output=output,
+            groups=groups,
         )
 
     def generate(self, video_name: str):
