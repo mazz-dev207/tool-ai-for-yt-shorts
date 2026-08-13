@@ -5,6 +5,7 @@ from pathlib import Path
 from src.caption.utils import ass_time
 from src.caption_hooks.models import CaptionHookResult
 from src.logger import info, warning
+from src.v3_config import V3_CAPTION_HOOK_DURATION
 
 
 _STYLE_NAME = "CaptionHook"
@@ -23,11 +24,13 @@ _CARD_RADIUS = 38
 
 
 def _escape_ass(text: str) -> str:
+    # Caption Hook text never needs literal ASS override braces. Removing them
+    # prevents malformed/model-supplied braces from leaking visibly into video.
     return (
         str(text or "")
         .replace("\\", r"\\")
-        .replace("{", r"\{")
-        .replace("}", r"\}")
+        .replace("{", "")
+        .replace("}", "")
     )
 
 
@@ -100,7 +103,9 @@ def _position(result: CaptionHookResult) -> tuple[int, int]:
 
 def _times(result: CaptionHookResult) -> tuple[float, float]:
     start = max(0.0, float(result.start or 0.05))
-    end = start + max(0.2, float(result.duration or 1.4))
+    # Render duration is canonical, so old cached CaptionHookResult durations
+    # cannot shorten the overlay after a configuration change.
+    end = start + float(V3_CAPTION_HOOK_DURATION)
     return start, end
 
 
@@ -114,7 +119,7 @@ def _background_line(result: CaptionHookResult) -> str:
     )
     return (
         f"Dialogue: 4,{ass_time(start)},{ass_time(end)},{_BOX_STYLE_NAME},"
-        f",0,0,0,,{tags}{shape}{{\\p0}}"
+        f",0,0,0,,{tags}{shape}{{\p0}}"
     )
 
 
