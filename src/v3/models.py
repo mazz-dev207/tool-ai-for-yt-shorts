@@ -22,8 +22,7 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
 
 def _source_ranges_overlap(first: "TimelineSegment", second: "TimelineSegment") -> bool:
     overlap = min(first.source_end, second.source_end) - max(
-        first.source_start,
-        second.source_start,
+        first.source_start, second.source_start,
     )
     return overlap > 0.02
 
@@ -203,6 +202,7 @@ class EditPlan:
     crop_instructions: list[CropInstruction] = field(default_factory=list)
     transitions: list[TransitionInstruction] = field(default_factory=list)
     caption_emphasis: list[dict[str, str]] = field(default_factory=list)
+    caption_hook: dict[str, Any] = field(default_factory=dict)
     editorial_angle: str = ""
     viewer_question: str = ""
     stakes: str = ""
@@ -275,6 +275,7 @@ class EditPlan:
             crop_instructions=[CropInstruction(**item) for item in payload.get("crop_instructions", [])],
             transitions=[TransitionInstruction(**item) for item in payload.get("transitions", [])],
             caption_emphasis=list(payload.get("caption_emphasis", []) or []),
+            caption_hook=dict(payload.get("caption_hook", {}) or {}),
             editorial_angle=str(payload.get("editorial_angle", "")),
             viewer_question=str(payload.get("viewer_question", "")),
             stakes=str(payload.get("stakes", "")),
