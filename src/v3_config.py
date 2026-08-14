@@ -98,7 +98,7 @@ if V3_CAPTION_HOOK_GENERATOR not in {"auto", "local", "off"}:
     V3_CAPTION_HOOK_GENERATOR = "auto"
 V3_CAPTION_HOOK_PROMPT_VERSION = os.getenv(
     "CAPTION_HOOK_PROMPT_VERSION",
-    "caption-hook-v2-3.3s-ass-fix",
+    "caption-hook-v3-tension-nonredundancy",
 ).strip()
 V3_CAPTION_HOOK_CACHE_DIR = BASE_DIR / "cache" / "caption_hooks"
 
