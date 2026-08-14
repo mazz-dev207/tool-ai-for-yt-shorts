@@ -24,7 +24,9 @@ from src.highlights.gemini_judge import (
     _retry_delay_seconds,
     build_transcript_context,
 )
+from src.hooks.qwen_analyzer import QwenHookAnalyzer
 from src.hooks.scoring import profile_priority_text
+from src.logger import warning
 
 
 CORE_PROPERTIES = {
@@ -339,15 +341,28 @@ Return every supplied candidate exactly once and return best_start.
 
 class GeminiHookAnalyzer:
     def __init__(self):
+        self._types = None
+        self.client = None
+        self._gemini_disabled_reason: str | None = None
+        self.local = QwenHookAnalyzer()
+
         if not GEMINI_API_KEY:
-            raise GeminiUnavailable("GEMINI_API_KEY lipsește")
+            self._gemini_disabled_reason = "missing_api_key"
+            warning(
+                "[HOOK LOCAL] GEMINI_API_KEY lipsește; Hook START folosește Qwen local."
+            )
+            return
+
         try:
             from google import genai
             from google.genai import types
-        except ImportError as exc:
-            raise GeminiUnavailable(
-                "Pachetul google-genai lipsește. Instalează: pip install google-genai"
-            ) from exc
+        except ImportError:
+            self._gemini_disabled_reason = "google_genai_missing"
+            warning(
+                "[HOOK LOCAL] google-genai lipsește; Hook START folosește Qwen local."
+            )
+            return
+
         self._types = types
         self.client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -363,6 +378,31 @@ class GeminiHookAnalyzer:
             time.sleep(2.0)
             current = self.client.files.get(name=current.name)
         raise TimeoutError("Gemini File API processing timeout")
+
+    def _local_analyze(
+        self,
+        *,
+        reason: str,
+        video_path: Path,
+        transcript: list[dict],
+        original_start: float,
+        highlight_end: float,
+        candidate_starts: list[float],
+        profile: str,
+        video_duration: float,
+        clip_index: int,
+    ) -> tuple[dict, bool]:
+        warning(f"[HOOK LOCAL {clip_index}] Gemini unavailable ({reason}); folosesc Qwen.")
+        return self.local.analyze(
+            video_path=video_path,
+            transcript=transcript,
+            original_start=original_start,
+            highlight_end=highlight_end,
+            candidate_starts=candidate_starts,
+            profile=profile,
+            video_duration=video_duration,
+            clip_index=clip_index,
+        )
 
     def analyze(
         self,
@@ -387,13 +427,40 @@ class GeminiHookAnalyzer:
         if cached is not None:
             return cached, True
 
-        context_video, context_start, context_end = _extract_hook_context(
-            video_path,
-            original_start,
-            highlight_end,
-            video_duration,
-            clip_index,
-        )
+        if self.client is None or self._gemini_disabled_reason is not None:
+            return self._local_analyze(
+                reason=self._gemini_disabled_reason or "client_unavailable",
+                video_path=video_path,
+                transcript=transcript,
+                original_start=original_start,
+                highlight_end=highlight_end,
+                candidate_starts=candidate_starts,
+                profile=profile,
+                video_duration=video_duration,
+                clip_index=clip_index,
+            )
+
+        try:
+            context_video, context_start, context_end = _extract_hook_context(
+                video_path,
+                original_start,
+                highlight_end,
+                video_duration,
+                clip_index,
+            )
+        except Exception as exc:
+            return self._local_analyze(
+                reason=f"context_extract_failed: {exc}",
+                video_path=video_path,
+                transcript=transcript,
+                original_start=original_start,
+                highlight_end=highlight_end,
+                candidate_starts=candidate_starts,
+                profile=profile,
+                video_duration=video_duration,
+                clip_index=clip_index,
+            )
+
         transcript_text = build_transcript_context(
             transcript,
             context_start,
@@ -436,9 +503,21 @@ class GeminiHookAnalyzer:
             except Exception as exc:
                 last_error = exc
                 if _is_daily_quota_exhausted(exc):
-                    raise GeminiQuotaExhausted(
-                        f"Gemini daily quota exhausted for Hook Optimizer model {GEMINI_MODEL}"
-                    ) from exc
+                    self._gemini_disabled_reason = "daily_quota_exhausted"
+                    return self._local_analyze(
+                        reason=(
+                            f"daily quota exhausted for {GEMINI_MODEL}; "
+                            "Gemini disabled for remaining Hook START clips"
+                        ),
+                        video_path=video_path,
+                        transcript=transcript,
+                        original_start=original_start,
+                        highlight_end=highlight_end,
+                        candidate_starts=candidate_starts,
+                        profile=profile,
+                        video_duration=video_duration,
+                        clip_index=clip_index,
+                    )
                 if attempt < max_attempts:
                     fallback_delay = min(2 ** attempt, 6)
                     retry_delay = (
@@ -458,6 +537,20 @@ class GeminiHookAnalyzer:
                 continue
             break
 
-        raise RuntimeError(
-            f"Gemini Hook Optimizer failed after retries: {last_error}"
-        )
+        try:
+            return self._local_analyze(
+                reason=f"Gemini failed after retries: {last_error}",
+                video_path=video_path,
+                transcript=transcript,
+                original_start=original_start,
+                highlight_end=highlight_end,
+                candidate_starts=candidate_starts,
+                profile=profile,
+                video_duration=video_duration,
+                clip_index=clip_index,
+            )
+        except Exception as local_exc:
+            raise RuntimeError(
+                "Gemini Hook Optimizer and Qwen fallback both failed: "
+                f"gemini={last_error}; qwen={local_exc}"
+            ) from local_exc
