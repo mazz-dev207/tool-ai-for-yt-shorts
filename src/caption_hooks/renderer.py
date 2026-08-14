@@ -122,7 +122,7 @@ def _background_line(result: CaptionHookResult) -> str:
     )
     return (
         f"Dialogue: 4,{ass_time(start)},{ass_time(end)},{_BOX_STYLE_NAME},"
-        f",0,0,0,,{tags}{shape}{{\p0}}"
+        f",0,0,0,,{tags}{shape}{{\\p0}}"
     )
 
 
