@@ -26,6 +26,16 @@ _CLICKBAIT = (
     "UNBELIEVABLE",
 )
 
+# Common short-form AI filler. These are not automatically forbidden, but they
+# should lose against a more specific/tension-driven alternative.
+_OVERUSED_LANGUAGE = {
+    "CHAOS": 16.0,
+    "CHAOTIC": 14.0,
+    "INSANE": 24.0,
+    "CRAZY": 20.0,
+    "UNBELIEVABLE": 35.0,
+}
+
 _STOPWORDS = {
     "THE", "A", "AN", "THIS", "THAT", "IT", "HE", "SHE", "THEY", "WE", "I",
     "IS", "ARE", "WAS", "WERE", "TO", "OF", "IN", "ON", "AT", "FOR", "AND",
@@ -33,24 +43,41 @@ _STOPWORDS = {
 }
 
 _TYPE_CURIOSITY = {
+    "outcome_tease": 91,
+    "contradiction": 95,
+    "mystery": 94,
+    "stakes": 94,
+    "reaction_setup": 87,
+    "challenge": 90,
+    "specific_fact": 79,
+    "conflict": 93,
+    "unexpected_discovery": 91,
+    "payoff_setup": 94,
+    "clarification": 66,
+    "none": 0,
+}
+
+# Tension is deliberately separate from curiosity. This pushes gaming captions
+# toward unresolved stakes/conflict/challenge instead of flat descriptive labels.
+_TYPE_TENSION = {
+    "stakes": 98,
+    "conflict": 96,
+    "challenge": 94,
+    "payoff_setup": 93,
+    "contradiction": 92,
+    "mystery": 90,
     "outcome_tease": 88,
-    "contradiction": 93,
-    "mystery": 95,
-    "stakes": 90,
     "reaction_setup": 86,
-    "challenge": 84,
-    "specific_fact": 80,
-    "conflict": 88,
-    "unexpected_discovery": 94,
-    "payoff_setup": 90,
-    "clarification": 70,
+    "unexpected_discovery": 84,
+    "specific_fact": 70,
+    "clarification": 58,
     "none": 0,
 }
 
 _PROFILE_TYPES = {
     "gaming": {
         "outcome_tease", "contradiction", "mystery", "stakes", "reaction_setup",
-        "challenge", "specific_fact", "unexpected_discovery", "payoff_setup",
+        "challenge", "specific_fact", "conflict", "unexpected_discovery", "payoff_setup",
     },
     "entertainment": {
         "outcome_tease", "contradiction", "mystery", "reaction_setup",
@@ -145,6 +172,14 @@ def _unsupported_numbers(text: str, truth_context: str) -> list[str]:
     return [number for number in caption_numbers if number not in truth_numbers]
 
 
+def _overused_language_penalty(text: str) -> float:
+    values = tokens(text)
+    return min(
+        45.0,
+        sum(_OVERUSED_LANGUAGE.get(token, 0.0) for token in values),
+    )
+
+
 def score_caption_candidate(
     candidate: CaptionHookCandidate,
     *,
@@ -169,6 +204,7 @@ def score_caption_candidate(
         "clickbait": 0.0,
         "spoiler": 0.0,
         "dialogue_duplication": 0.0,
+        "overused_language": 0.0,
         "too_long": 0.0,
         "awkward_language": 0.0,
         "missing_context": 0.0,
@@ -182,19 +218,31 @@ def score_caption_candidate(
     if any(phrase in candidate.text for phrase in _CLICKBAIT):
         penalties["clickbait"] = 30.0
         rejected.append("clickbait")
+
+    penalties["overused_language"] = _overused_language_penalty(candidate.text)
+
     if word_count > V3_CAPTION_HOOK_MAX_WORDS:
         penalties["too_long"] = min(35.0, 7.0 * (word_count - V3_CAPTION_HOOK_MAX_WORDS))
     if word_count < 2:
         penalties["awkward_language"] = 18.0
-    if duplicate_similarity >= 0.72:
-        penalties["dialogue_duplication"] = round(18.0 + 22.0 * duplicate_similarity, 2)
+
+    # Semantic duplication of the first spoken line is one of the fastest ways
+    # for an editorial caption to feel cheap. Start penalizing earlier and make
+    # near-verbatim duplication effectively noncompetitive.
+    if duplicate_similarity >= 0.58:
+        penalties["dialogue_duplication"] = round(
+            min(68.0, 22.0 + 44.0 * duplicate_similarity),
+            2,
+        )
+    if duplicate_similarity >= 0.76:
         rejected.append("dialogue_duplication")
-    if (
-        payoff_text
-        and payoff_similarity >= 0.72
-        and candidate.type not in {"outcome_tease", "specific_fact"}
-    ):
-        penalties["spoiler"] = round(12.0 + 18.0 * payoff_similarity, 2)
+
+    if payoff_text and payoff_similarity >= 0.72:
+        if candidate.type in {"outcome_tease", "specific_fact"}:
+            penalties["spoiler"] = round(8.0 + 12.0 * payoff_similarity, 2)
+        else:
+            penalties["spoiler"] = round(12.0 + 18.0 * payoff_similarity, 2)
+
     if unsupported_numbers:
         penalties["unsupported_claim"] = 100.0
         rejected.append("unsupported_number")
@@ -218,7 +266,12 @@ def score_caption_candidate(
     if candidate.type in {"specific_fact", "stakes", "outcome_tease"}:
         specificity += 6.0
 
-    naturalness = 92.0 - penalties["generic_hype"] * 0.45 - penalties["clickbait"] * 0.35
+    naturalness = (
+        92.0
+        - penalties["generic_hype"] * 0.45
+        - penalties["clickbait"] * 0.35
+        - penalties["overused_language"] * 0.45
+    )
 
     payoff_score = satisfaction.get("payoff_score")
     expectation_score = satisfaction.get("expectation_match_score")
@@ -252,13 +305,16 @@ def score_caption_candidate(
     truthfulness = 100.0 - penalties["unsupported_claim"]
 
     curiosity = float(_TYPE_CURIOSITY.get(candidate.type, 76))
+    tension = float(_TYPE_TENSION.get(candidate.type, 72))
     preferred = _PROFILE_TYPES.get(str(content_profile or "").lower())
     if preferred and candidate.type not in preferred:
         curiosity -= 8.0
+        tension -= 10.0
         naturalness -= 4.0
 
     scores = {
         "curiosity": _clamp(curiosity),
+        "tension": _clamp(tension),
         "clarity": _clamp(clarity),
         "specificity": _clamp(specificity),
         "naturalness": _clamp(naturalness),
@@ -270,15 +326,16 @@ def score_caption_candidate(
     }
 
     weights = {
-        "curiosity": 0.13,
-        "clarity": 0.13,
-        "specificity": 0.10,
-        "naturalness": 0.10,
-        "payoff_alignment": 0.17,
-        "context_independence": 0.10,
-        "visual_readability": 0.10,
-        "non_redundancy": 0.08,
-        "truthfulness": 0.09,
+        "curiosity": 0.12,
+        "tension": 0.14,
+        "clarity": 0.11,
+        "specificity": 0.08,
+        "naturalness": 0.11,
+        "payoff_alignment": 0.16,
+        "context_independence": 0.09,
+        "visual_readability": 0.08,
+        "non_redundancy": 0.06,
+        "truthfulness": 0.05,
     }
     weighted = sum(scores[key] * weights[key] for key in weights)
     penalty_total = sum(penalties.values())
