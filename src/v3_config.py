@@ -96,10 +96,15 @@ V3_CAPTION_HOOK_DEBUG = _env_bool("CAPTION_HOOK_DEBUG", True)
 V3_CAPTION_HOOK_GENERATOR = os.getenv("CAPTION_HOOK_GENERATOR", "auto").strip().lower()
 if V3_CAPTION_HOOK_GENERATOR not in {"auto", "local", "off"}:
     V3_CAPTION_HOOK_GENERATOR = "auto"
-V3_CAPTION_HOOK_PROMPT_VERSION = os.getenv(
+_caption_hook_prompt_base = os.getenv(
     "CAPTION_HOOK_PROMPT_VERSION",
     "caption-hook-v3-tension-nonredundancy",
 ).strip()
+# Scoring version is appended unconditionally so an old .env prompt version
+# cannot accidentally reuse cached results produced by older scoring rules.
+V3_CAPTION_HOOK_PROMPT_VERSION = (
+    f"{_caption_hook_prompt_base}|scoring-tension-nonredundancy-v1"
+)
 V3_CAPTION_HOOK_CACHE_DIR = BASE_DIR / "cache" / "caption_hooks"
 
 
