@@ -1,6 +1,7 @@
 from pathlib import Path
 import hashlib
 import json
+import os
 import shutil
 import sys
 
@@ -16,6 +17,9 @@ STEP = WINDOW_SIZE - OVERLAP
 
 _CHUNK_CACHE_DIR = BASE_DIR / "cache" / "transcript_chunks"
 _CHUNK_CACHE_VERSION = "transcript-window-cache-v1"
+_FAST_CACHE_ENABLED = os.getenv("FAST_CACHE_ENABLED", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 
 def _cache_key(transcript_file: Path) -> str:
@@ -35,6 +39,8 @@ def _cache_path(transcript_file: Path) -> Path:
 
 
 def _restore_cache(transcript_file: Path, output: Path) -> bool:
+    if not _FAST_CACHE_ENABLED:
+        return False
     try:
         cached = _cache_path(transcript_file)
         if not cached.exists():
@@ -51,6 +57,8 @@ def _restore_cache(transcript_file: Path, output: Path) -> bool:
 
 
 def _write_cache(transcript_file: Path, output: Path) -> None:
+    if not _FAST_CACHE_ENABLED:
+        return
     try:
         cached = _cache_path(transcript_file)
         cached.parent.mkdir(parents=True, exist_ok=True)
