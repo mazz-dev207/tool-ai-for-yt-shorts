@@ -6,6 +6,7 @@ from src.config import (
     TRANSCRIPT_DIR,
     HIGHLIGHTS_DIR,
     SUBTITLES_DIR,
+    OUTPUT_DIR,
     CAPTION_ANIMATION,
 )
 from src.logger import info, success, warning
@@ -16,6 +17,8 @@ from src.caption.ass_writer import ASSWriter
 from src.caption_hooks.generator import generate_caption_hook
 from src.caption_hooks.models import CaptionHookResult
 from src.caption_hooks.renderer import append_caption_hook_to_ass
+from src.reaction_captions.detector import detect_reactions
+from src.reaction_captions.renderer import append_reaction_captions_to_ass
 from src.retention.timeline import extract_remapped_words
 
 
@@ -175,6 +178,35 @@ class CaptionEngine:
 
         return result
 
+    def _reaction_captions(
+        self,
+        *,
+        clip: dict,
+        index: int,
+        output: Path,
+        groups: list[WordGroup],
+    ) -> None:
+        """Detect non-dialogue reactions on the already-cut Short only.
+
+        Keeping this after SmartCut means the audio classifier never scans the full
+        source video and timestamps already match the final cut timeline.
+        """
+        cut_path = OUTPUT_DIR / f"clip_{index}.mp4"
+        try:
+            events = detect_reactions(cut_path, groups)
+            clip["reaction_captions"] = [event.to_dict() for event in events]
+            rendered = append_reaction_captions_to_ass(output, events)
+            clip["reaction_caption_render_status"] = (
+                "ready" if rendered else "none"
+            )
+        except Exception as exc:
+            warning(
+                f"[REACTION CAPTION] clip={index} failed safely: {exc}; "
+                "continuing without reaction captions."
+            )
+            clip["reaction_captions"] = []
+            clip["reaction_caption_render_status"] = "unavailable"
+
     def _write_ass_with_hook(
         self,
         *,
@@ -193,6 +225,12 @@ class CaptionEngine:
             clip=clip,
             index=index,
             output=output,
+        )
+        self._reaction_captions(
+            clip=clip,
+            index=index,
+            output=output,
+            groups=groups,
         )
 
     def generate_clip(self, video_name, transcript, clip, index):
@@ -213,9 +251,12 @@ class CaptionEngine:
 
         if not words:
             # A visual-payoff Short can legitimately contain no dialogue. Keep a
-            # valid empty ASS file so Caption Hook can still be the only text layer
-            # and the renderer never fails solely because karaoke has no words.
-            info(f"Clip {index} nu are cuvinte; creez ASS valid pentru hook vizual/fallback.")
+            # valid empty ASS file so Caption Hook and reaction captions can still
+            # be the only text layers.
+            info(
+                f"Clip {index} nu are cuvinte; creez ASS valid pentru "
+                "hook vizual/reacții/fallback."
+            )
             self._write_ass_with_hook(
                 video_name=video_name,
                 transcript=transcript,
@@ -229,7 +270,7 @@ class CaptionEngine:
         info(f"Au fost create {len(groups)} grupuri.")
 
         if not groups:
-            info(f"Clip {index} fără grupuri; creez ASS valid pentru Caption Hook.")
+            info(f"Clip {index} fără grupuri; creez ASS valid pentru Caption Hook/reacții.")
             self._write_ass_with_hook(
                 video_name=video_name,
                 transcript=transcript,
@@ -258,9 +299,8 @@ class CaptionEngine:
             self.generate_clip(video_name, transcript, clip, index)
             generated += 1
 
-        # Persist Caption Hook structured output next to Satisfaction/V3 metadata.
-        # This mutates only the presentation metadata; highlight boundaries/order
-        # remain exactly as selected upstream.
+        # Persist presentation metadata next to Satisfaction/V3 metadata. This
+        # mutates only presentation fields; highlight boundaries/order stay intact.
         self.save_json(highlights_path, highlights)
 
         success(f"Generate {generated} fișiere ASS.")
