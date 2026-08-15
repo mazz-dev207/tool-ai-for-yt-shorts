@@ -1,0 +1,3 @@
+# Optional but recommended for acoustic Reaction Caption detection.
+# The core pipeline still runs without this file; it falls back to transcript-only reactions.
+transformers>=4.30,<6
