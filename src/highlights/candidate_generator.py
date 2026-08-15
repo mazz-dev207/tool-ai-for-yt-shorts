@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -14,6 +15,9 @@ GEMINI_DISCOVERY_MIN_VIRAL_SCORE = 55.0
 ENTERTAINMENT_DISCOVERY_MIN_VIRAL_SCORE = 50.0
 _DISCOVERY_CACHE_DIR = BASE_DIR / "cache" / "candidate_discovery"
 _DISCOVERY_CACHE_VERSION = "candidate-discovery-cache-v1"
+_FAST_CACHE_ENABLED = os.getenv("FAST_CACHE_ENABLED", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 
 def _target_threshold(high_recall: bool, profile: str) -> float:
@@ -67,7 +71,7 @@ def _cache_folder(key: str) -> Path:
 
 
 def _restore_cache(video_name: str, key: str | None) -> Path | None:
-    if not key:
+    if not _FAST_CACHE_ENABLED or not key:
         return None
     folder = _cache_folder(key)
     cached_highlights = folder / "highlights.json"
@@ -97,7 +101,7 @@ def _restore_cache(video_name: str, key: str | None) -> Path | None:
 
 
 def _store_cache(video_name: str, key: str | None) -> None:
-    if not key:
+    if not _FAST_CACHE_ENABLED or not key:
         return
     source = HIGHLIGHTS_DIR / f"{video_name}.json"
     analysis = HIGHLIGHTS_DIR / f"{video_name}_analysis.json"
