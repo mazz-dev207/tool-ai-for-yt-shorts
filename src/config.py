@@ -100,7 +100,7 @@ RETENTION_MAX_CLIP_DURATION = 60.0
 RETENTION_MIN_FINAL_SCORE = 55
 
 # --------------------------------------------------
-# Gemini Highlight Judge
+# Gemini Final Multimodal Highlight Judge
 # --------------------------------------------------
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip()
@@ -109,8 +109,10 @@ HIGHLIGHT_MODE = os.getenv("HIGHLIGHT_MODE", "legacy").strip().lower()
 CONTENT_PROFILE = os.getenv("CONTENT_PROFILE", "auto").strip().lower()
 GEMINI_CONTEXT_BEFORE = _env_float("GEMINI_CONTEXT_BEFORE", 8.0)
 GEMINI_CONTEXT_AFTER = _env_float("GEMINI_CONTEXT_AFTER", 8.0)
-GEMINI_MAX_CANDIDATES = _env_int("GEMINI_MAX_CANDIDATES", 60)
-GEMINI_TOP_HIGHLIGHTS = _env_int("GEMINI_TOP_HIGHLIGHTS", 10)
+# Quota-optimized defaults: local Qwen does high-recall work; Gemini judges only
+# the strongest small shortlist. .env can still override these intentionally.
+GEMINI_MAX_CANDIDATES = _env_int("GEMINI_MAX_CANDIDATES", 6)
+GEMINI_TOP_HIGHLIGHTS = _env_int("GEMINI_TOP_HIGHLIGHTS", 5)
 GEMINI_MIN_SCORE = _env_int("GEMINI_MIN_SCORE", 55)
 GEMINI_OVERLAP_THRESHOLD = _env_float("GEMINI_OVERLAP_THRESHOLD", 0.60)
 GEMINI_MAX_RETRIES = _env_int("GEMINI_MAX_RETRIES", 2)
