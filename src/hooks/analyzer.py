@@ -4,15 +4,24 @@ from __future__ import annotations
 
 Gemini used to be the primary provider here. In the quota-optimized pipeline the
 multimodal Gemini budget is reserved for the final highlight judge, so Hook START
-is local-first and delegates to Qwen/Ollama.  The historical class name is kept
-for import/test compatibility with the rest of the project.
+is local-first and delegates to Qwen/Ollama. The historical class/module symbols
+are kept for import and regression-test compatibility.
 """
 
 import json
 
+from src.config import GEMINI_API_KEY as _CONFIG_GEMINI_API_KEY
 from src.hooks.qwen_analyzer import QwenHookAnalyzer
 from src.hooks.scoring import profile_priority_text
 from src.logger import info
+
+
+# Compatibility-only symbols. Production Hook START never consults these.
+GEMINI_API_KEY = _CONFIG_GEMINI_API_KEY
+
+
+def _load_cache(_key: str):
+    return None
 
 
 CORE_PROPERTIES = {
