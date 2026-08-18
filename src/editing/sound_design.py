@@ -23,6 +23,8 @@ def build_audio_events(
     for raw in proposal.get("audio_events", []) or []:
         if len(result) >= max_total_events:
             break
+        if not isinstance(raw, dict):
+            continue
         effect = str(raw.get("effect", "accent") or "accent").lower()
         asset = str(raw.get("asset", "") or "").strip()
         if not asset:
