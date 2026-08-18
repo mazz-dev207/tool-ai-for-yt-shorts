@@ -141,6 +141,22 @@ def build_edit_plan(
         editorial_profile,
     )
 
+    caption_emphasis = []
+    for item in proposal.get("caption_emphasis", []) or []:
+        if not isinstance(item, dict):
+            continue
+        phrase = str(item.get("phrase", "")).strip()
+        if not phrase:
+            continue
+        caption_emphasis.append(
+            {
+                "phrase": phrase[:80],
+                "emphasis": str(item.get("emphasis", "strong")),
+            }
+        )
+        if len(caption_emphasis) >= 5:
+            break
+
     return EditPlan(
         clip_index=clip_index,
         hook=hook,
@@ -148,14 +164,7 @@ def build_edit_plan(
         visual_events=visual_events,
         audio_events=audio_events,
         context_overlays=overlays,
-        caption_emphasis=[
-            {
-                "phrase": str(item.get("phrase", ""))[:80],
-                "emphasis": str(item.get("emphasis", "strong")),
-            }
-            for item in proposal.get("caption_emphasis", []) or []
-            if str(item.get("phrase", "")).strip()
-        ][:5],
+        caption_emphasis=caption_emphasis,
         editorial_angle=angle.primary_angle,
         viewer_question=angle.viewer_question,
         stakes=angle.stakes,
