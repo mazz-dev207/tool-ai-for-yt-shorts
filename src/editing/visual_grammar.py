@@ -39,13 +39,16 @@ def build_visual_events(
     for raw in proposal.get("visual_events", []) or []:
         if len(result) >= max_total_effects:
             break
+        if not isinstance(raw, dict):
+            continue
 
         event = str(raw.get("event", "")).lower()
         intensity = max(
             0.0,
             min(1.0, float(raw.get("intensity", 0.5) or 0.5)),
         )
-        requested = raw.get("edit") or {}
+        requested_raw = raw.get("edit")
+        requested = requested_raw if isinstance(requested_raw, dict) else {}
         effects: list[str] = []
 
         explicit = str(requested.get("effect", "") or "").lower()
