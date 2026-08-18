@@ -13,11 +13,16 @@ from src.config import (
     OLLAMA_MODEL,
 )
 from src.highlights.gemini_judge import build_transcript_context
+from src.hooks.compact import (
+    COMPACT_TOP_K,
+    build_local_compact_fallback,
+    reconstruct_compact_candidate,
+)
 from src.hooks.scoring import profile_priority_text
-from src.logger import info
+from src.logger import info, warning
 
 
-_QWEN_HOOK_VERSION = "hook-qwen-fallback-v1"
+_QWEN_HOOK_VERSION = "hook-qwen-compact-v2"
 _CORE_KEYS = (
     "immediate_action",
     "curiosity_gap",
@@ -121,59 +126,122 @@ def _parse_json(content: str) -> dict:
     return payload
 
 
-def _sanitize_payload(payload: dict, candidate_starts: list[float]) -> dict:
+def _nearest_allowed(value, candidate_starts: list[float]) -> float | None:
+    try:
+        reported = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not candidate_starts:
+        return None
+    nearest = min(candidate_starts, key=lambda item: abs(float(item) - reported))
+    if abs(float(nearest) - reported) > 0.12:
+        return None
+    return round(float(nearest), 3)
+
+
+def _sanitize_legacy_candidate(raw: dict, start: float) -> dict:
+    item = dict(raw)
+    item["start"] = start
+    core = item.get("core_scores") if isinstance(item.get("core_scores"), dict) else {}
+    modifiers = item.get("human_modifiers") if isinstance(item.get("human_modifiers"), dict) else {}
+    penalties = item.get("penalties") if isinstance(item.get("penalties"), dict) else {}
+    item["core_scores"] = {key: core.get(key, 0) for key in _CORE_KEYS}
+    item["human_modifiers"] = {key: modifiers.get(key, 0) for key in _MODIFIER_KEYS}
+    item["penalties"] = {key: penalties.get(key, 0) for key in _PENALTY_KEYS}
+    item.setdefault("base_hook_score", 0)
+    item.setdefault("final_hook_score", 0)
+    item.setdefault("hook_type", "MIXED")
+    item.setdefault("secondary_hook_types", [])
+    item.setdefault("hook_reason", item.get("reason") or "Local Qwen hook analysis.")
+    item.setdefault("hook_confidence", item.get("confidence", 0.55))
+    item.setdefault("loop_score", 0)
+    return item
+
+
+def _sanitize_payload(
+    payload: dict,
+    candidate_starts: list[float],
+    *,
+    transcript: list[dict] | None = None,
+    video_path: Path | None = None,
+    original_start: float | None = None,
+    highlight_end: float | None = None,
+) -> dict:
+    """Accept compact V2 output and expand it to the historical detailed contract.
+
+    Legacy detailed payloads remain accepted for tests/debug tooling. Compact V2
+    returns at most Top 3; Python restores detailed scores and local media signals.
+    """
     raw_candidates = payload.get("candidates")
     if not isinstance(raw_candidates, list):
         raise ValueError("Qwen Hook Optimizer JSON missing candidates")
 
-    sanitized: list[dict] = []
+    original_start = float(original_start if original_start is not None else (candidate_starts[0] if candidate_starts else 0.0))
+    highlight_end = float(highlight_end if highlight_end is not None else original_start + 30.0)
+
+    normalized_raw: list[tuple[dict, float, bool]] = []
     seen: set[float] = set()
     for raw in raw_candidates:
         if not isinstance(raw, dict):
             continue
-        try:
-            reported_start = float(raw.get("start"))
-        except (TypeError, ValueError):
+        start = _nearest_allowed(raw.get("start"), candidate_starts)
+        if start is None or start in seen:
             continue
-        nearest = min(candidate_starts, key=lambda value: abs(value - reported_start))
-        if abs(nearest - reported_start) > 0.12:
-            continue
-        normalized_start = round(nearest, 3)
-        if normalized_start in seen:
-            continue
+        seen.add(start)
+        is_legacy = isinstance(raw.get("core_scores"), dict) or isinstance(raw.get("hook_scores"), dict)
+        normalized_raw.append((raw, start, is_legacy))
 
-        item = dict(raw)
-        item["start"] = normalized_start
-        core = item.get("core_scores") if isinstance(item.get("core_scores"), dict) else {}
-        modifiers = (
-            item.get("human_modifiers")
-            if isinstance(item.get("human_modifiers"), dict)
-            else {}
-        )
-        penalties = item.get("penalties") if isinstance(item.get("penalties"), dict) else {}
-        item["core_scores"] = {key: core.get(key, 0) for key in _CORE_KEYS}
-        item["human_modifiers"] = {key: modifiers.get(key, 0) for key in _MODIFIER_KEYS}
-        item["penalties"] = {key: penalties.get(key, 0) for key in _PENALTY_KEYS}
-        item.setdefault("base_hook_score", 0)
-        item.setdefault("final_hook_score", 0)
-        item.setdefault("hook_type", "MIXED")
-        item.setdefault("secondary_hook_types", [])
-        item.setdefault("hook_reason", "Local Qwen fallback analysis.")
-        item.setdefault("hook_confidence", 0.55)
-        item.setdefault("loop_score", 0)
-        sanitized.append(item)
-        seen.add(normalized_start)
-
-    if not sanitized:
+    if not normalized_raw:
         raise ValueError("Qwen Hook Optimizer returned no usable candidates")
 
+    compact_mode = any(not item[2] for item in normalized_raw)
+    if compact_mode:
+        normalized_raw.sort(
+            key=lambda item: (
+                float(item[0].get("hook_score", item[0].get("score", 0)) or 0),
+                float(item[0].get("confidence", 0) or 0),
+                -abs(item[1] - original_start),
+            ),
+            reverse=True,
+        )
+        normalized_raw = normalized_raw[:COMPACT_TOP_K]
+
+    sanitized: list[dict] = []
+    for raw, start, is_legacy in normalized_raw:
+        if is_legacy:
+            item = _sanitize_legacy_candidate(raw, start)
+        else:
+            compact_raw = dict(raw)
+            compact_raw["start"] = start
+            item = reconstruct_compact_candidate(
+                compact_raw,
+                transcript=transcript,
+                video_path=video_path,
+                original_start=original_start,
+                highlight_end=highlight_end,
+            )
+        sanitized.append(item)
+
+    allowed_returned = {round(float(item["start"]), 3) for item in sanitized}
+    best_start = _nearest_allowed(payload.get("best_start"), candidate_starts)
+    if best_start not in allowed_returned:
+        best_item = max(
+            sanitized,
+            key=lambda item: (
+                float(item.get("_compact_semantic_score", item.get("final_hook_score", 0)) or 0),
+                float(item.get("hook_confidence", 0) or 0),
+                -abs(float(item["start"]) - original_start),
+            ),
+        )
+        best_start = round(float(best_item["start"]), 3)
+
     sanitized.sort(key=lambda item: float(item["start"]))
-    payload = dict(payload)
-    payload["candidates"] = sanitized
-    if not isinstance(payload.get("best_start"), (int, float)):
-        payload["best_start"] = sanitized[0]["start"]
-    payload["_source"] = "qwen_local_fallback"
-    return payload
+    result = dict(payload)
+    result["candidates"] = sanitized
+    result["best_start"] = best_start
+    result["_source"] = "qwen_local_fallback"
+    result["_mode"] = "compact_v2" if compact_mode else "legacy_detailed_compat"
+    return result
 
 
 def build_qwen_hook_prompt(
@@ -187,14 +255,10 @@ def build_qwen_hook_prompt(
     context_end: float,
 ) -> str:
     return f"""
-You are the LOCAL QWEN FALLBACK for a YouTube Shorts Hook START Optimizer.
-Gemini multimodal analysis is unavailable. The highlight is already selected.
-Choose the strongest START timestamp from the supplied candidates for first-second retention.
-
-IMPORTANT LIMITATION:
-You have TIMESTAMPED TRANSCRIPT context, not direct video vision. Be conservative about visual claims.
-Set visual_surprise low (normally 0-3) unless the transcript clearly describes a visual surprise.
-The local pipeline will independently add frame-boundary, audio-onset and reaction refinement after your semantic choice.
+You are the LOCAL QWEN semantic selector for HOOK START V2 COMPACT.
+The highlight is already selected. Evaluate all supplied START timestamps internally,
+but RETURN ONLY the TOP {COMPACT_TOP_K} semantic starts. Python will calculate the detailed
+rubric, audio onset, frame boundary and reaction signals after your response.
 
 CONTENT PROFILE: {profile}
 PROFILE PRIORITIES: {profile_priority_text(profile)}
@@ -202,33 +266,38 @@ ORIGINAL HIGHLIGHT: {original_start:.3f}s -> {highlight_end:.3f}s
 AVAILABLE CONTEXT: {context_start:.3f}s -> {context_end:.3f}s
 CANDIDATE STARTS: {json.dumps(candidate_starts, separators=(',', ':'))}
 
-For EVERY candidate return these fields:
-- start
-- core_scores: immediate_action 0-20, curiosity_gap 0-20, emotional_reaction 0-15,
-  conflict_tension 0-15, visual_surprise 0-10, context_independence 0-10, payoff_proximity 0-10
-- human_modifiers: contradiction -5..8, specificity 0..6, timeframe_tension 0..5,
-  relatability 0..5, naturalness -15..10
-- penalties as NEGATIVE values or zero: dead_air, context_dependency, spoiled_payoff,
-  mid_sentence, duplicate_information, forced_hook, generic_setup, forced_intro,
-  youtuber_intro, fake_hype, obvious_clickbait, repeated_context, fake_urgency
-- hook_type
-- secondary_hook_types
-- hook_reason: one short sentence
-- hook_confidence: 0.0-1.0
-- loop_score: 0-100
-- base_hook_score and final_hook_score may be estimates; local code recalculates them.
+Judge semantic first-second retention using:
+- immediate action or natural reaction
+- curiosity gap / unresolved tension
+- minimum context required to understand the moment
+- natural speech start; avoid mid-thought or generic setup
+- nearby payoff without starting after/spoiling it
+- specificity and authenticity over fake hype
 
-Prefer unresolved tension, natural reaction, immediate action, a clean question in the viewer's mind,
-and the minimum context needed before a nearby payoff. Penalize starts that begin mid-thought,
-repeat missing context, start after the payoff, feel like generic setup, or require information before the clip.
-Do not reward hype words by themselves. Naturalness and context independence matter more than loud wording.
+FOUR-QUESTION CHECK:
+1. What is happening?
+2. Why should the viewer care?
+3. What happens next?
+4. Does the opening feel natural/real?
+
+IMPORTANT:
+- You have transcript context, NOT video vision. Do not invent visual facts.
+- Evaluate every supplied timestamp internally, but DO NOT output all of them.
+- Return at most {COMPACT_TOP_K} candidates, strongest first.
+- Each reason must be one short sentence, max 18 words.
+- best_start MUST exactly match one returned candidate.
+- Never invent a timestamp outside CANDIDATE STARTS.
 
 TIMESTAMPED TRANSCRIPT:
 {transcript_text or "(no dialogue in this context)"}
 
-Return ONLY JSON with this shape:
-{{"candidates":[...],"best_start":0.0}}
-Return each supplied candidate at most once and do not invent timestamps outside the list.
+Return ONLY strict JSON in exactly this compact shape:
+{{
+  "candidates": [
+    {{"start": 0.0, "hook_score": 0, "confidence": 0.0, "reason": "short reason"}}
+  ],
+  "best_start": 0.0
+}}
 """.strip()
 
 
@@ -257,7 +326,7 @@ class QwenHookAnalyzer:
         )
         cached = _load_cache(key)
         if cached is not None:
-            info(f"[HOOK LOCAL {clip_index}] Qwen cache hit")
+            info(f"[HOOK COMPACT {clip_index}] Qwen cache hit")
             return cached, True
 
         context_start = max(0.0, original_start - HOOK_SEARCH_BEFORE - 0.50)
@@ -288,26 +357,49 @@ class QwenHookAnalyzer:
                     messages=[
                         {
                             "role": "system",
-                            "content": "Return strict JSON only. Score hook starts conservatively and truthfully.",
+                            "content": (
+                                "Return strict compact JSON only. Select at most three hook starts; "
+                                "do not emit the detailed scoring rubric."
+                            ),
                         },
                         {"role": "user", "content": prompt},
                     ],
                     format="json",
                     options={
-                        "temperature": 0.10 if attempt == 1 else 0.0,
+                        "temperature": 0.08 if attempt == 1 else 0.0,
                         "num_ctx": 4096,
-                        "num_predict": 1800,
+                        "num_predict": 640,
                     },
                 )
                 payload = _parse_json(response["message"]["content"])
-                payload = _sanitize_payload(payload, candidate_starts)
+                payload = _sanitize_payload(
+                    payload,
+                    candidate_starts,
+                    transcript=transcript,
+                    video_path=video_path,
+                    original_start=original_start,
+                    highlight_end=highlight_end,
+                )
                 _save_cache(key, payload)
                 info(
-                    f"[HOOK LOCAL {clip_index}] Qwen fallback produced "
-                    f"{len(payload['candidates'])} candidates"
+                    f"[HOOK COMPACT {clip_index}] Qwen Top-{len(payload['candidates'])} "
+                    "expanded locally with audio/frame signals"
                 )
                 return payload, False
             except Exception as exc:
                 last_error = exc
+                warning(f"[HOOK COMPACT {clip_index}] attempt={attempt} failed: {exc}")
 
-        raise RuntimeError(f"Qwen Hook Optimizer failed after retry: {last_error}")
+        fallback = build_local_compact_fallback(
+            candidate_starts=candidate_starts,
+            transcript=transcript,
+            video_path=video_path,
+            original_start=original_start,
+            highlight_end=highlight_end,
+        )
+        fallback["_qwen_error"] = str(last_error or "unknown compact Qwen failure")[:300]
+        _save_cache(key, fallback)
+        warning(
+            f"[HOOK COMPACT {clip_index}] Qwen failed twice; using deterministic local Top-3 fallback"
+        )
+        return fallback, False
