@@ -91,10 +91,14 @@ class HookCompactV2Tests(unittest.TestCase):
             root = Path(tmp)
             video = root / "video.mp4"
             video.write_bytes(b"x")
+            zero_media = {"audio": 0.0, "visual": 0.0, "reaction": 0.0}
             with patch("src.hooks.qwen_analyzer.HOOK_CACHE_DIR", root / "cache"), patch(
                 "src.hooks.qwen_analyzer.ollama.chat",
                 return_value={"message": {"content": "{not valid json"}},
-            ) as chat:
+            ) as chat, patch(
+                "src.hooks.compact._local_media_signals",
+                return_value=zero_media,
+            ):
                 result, from_cache = QwenHookAnalyzer().analyze(
                     video_path=video,
                     transcript=[{"start": 20.0, "end": 21.0, "text": "Wait, run!"}],
