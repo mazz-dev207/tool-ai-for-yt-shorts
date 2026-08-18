@@ -27,7 +27,7 @@ class HookCompactV2Tests(unittest.TestCase):
         self.assertIn('"hook_score"', prompt)
         self.assertIn('"confidence"', prompt)
         self.assertNotIn("For EVERY candidate return these fields", prompt)
-        self.assertIn("do NOT output all of them", prompt)
+        self.assertIn("DO NOT output all of them", prompt)
 
     def test_compact_payload_is_limited_to_top_three_and_expanded_locally(self):
         payload = {
