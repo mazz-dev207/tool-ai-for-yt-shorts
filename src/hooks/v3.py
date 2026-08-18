@@ -91,6 +91,8 @@ def editorial_text_truth_safe(text: str, context: str) -> bool:
 def filter_truthful_overlays(raw_overlays: list[dict], context: str) -> list[dict]:
     result = []
     for raw in raw_overlays or []:
+        if not isinstance(raw, dict):
+            continue
         text = _clean(raw.get("text", ""))
         if editorial_text_truth_safe(text, context):
             result.append(dict(raw))
@@ -119,6 +121,8 @@ def select_hook_v3(
     context = _transcript_text(transcript, context_start, context_end)
 
     for raw in proposal.get("hook_candidates", []) or []:
+        if not isinstance(raw, dict):
+            continue
         mode = str(raw.get("mode", "")).upper()
         score = int(max(0, min(100, raw.get("score", 0) or 0)))
         confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.0) or 0.0)))
